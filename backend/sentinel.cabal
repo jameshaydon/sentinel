@@ -18,8 +18,10 @@ library
       Examples.AirCanada.Types
       Pre
       Sentinel.Agent
+      Sentinel.LLM
       Sentinel.Output
       Sentinel.Pretty
+      Sentinel.Schema
       Sentinel.Tool
   other-modules:
       Paths_sentinel

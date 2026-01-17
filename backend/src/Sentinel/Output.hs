@@ -5,10 +5,11 @@ module Sentinel.Output
     FinalAnswer (..),
     ToolUse (..),
     Observation (..),
+    ToolError (..),
     Response (..),
     Error (..),
     Iteration (..),
-    AgentStart (..),
+    TurnStart (..),
   )
 where
 
@@ -74,6 +75,20 @@ instance Disp Observation where
           styledObservation (wrappedText result)
         ]
 
+-- | Error from a tool execution
+data ToolError = ToolError {toolErrorMessage :: Text}
+  deriving stock (Show, Eq, Generic)
+
+instance Disp ToolError where
+  disp (ToolError err) =
+    nest 4
+      $ vsep
+        [ "",
+          errorText "## Tool Error",
+          "",
+          errorText (wrappedText err)
+        ]
+
 -- | Conversational response from the agent (not in ReAct format)
 data Response = Response {message :: Text}
   deriving stock (Show, Eq, Generic)
@@ -114,15 +129,18 @@ instance Disp Iteration where
           header "# Iteration" <+> iterationNum (pretty n)
         ]
 
--- | Agent start marker with user query
-data AgentStart = AgentStart {userQuery :: Text}
+-- | Turn start marker with turn number and user query
+data TurnStart = TurnStart
+  { turnNumber :: Int,
+    userQuery :: Text
+  }
   deriving stock (Show, Eq, Generic)
 
-instance Disp AgentStart where
-  disp (AgentStart query) =
+instance Disp TurnStart where
+  disp (TurnStart turn query) =
     vsep
       [ "",
-        header "# Agent Start",
+        header "# Turn" <+> iterationNum (pretty turn),
         "",
         label "User Query:" <+> userText (wrappedText query)
       ]

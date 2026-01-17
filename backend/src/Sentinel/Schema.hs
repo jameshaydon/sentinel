@@ -1,0 +1,46 @@
+-- | Helpers for constructing JSON Schema objects for tool parameters.
+module Sentinel.Schema
+  ( objectSchema,
+    stringProp,
+    enumProp,
+  )
+where
+
+import Data.Aeson ((.=))
+import Data.Aeson qualified as Aeson
+import Data.Aeson.Key qualified as Key
+import Data.Aeson.KeyMap qualified as KeyMap
+import Pre hiding ((.=))
+
+-- | Build an object schema with properties and required fields.
+--
+-- Example:
+--
+-- > objectSchema
+-- >   [("bookingRef", stringProp "The 6-character booking reference")]
+-- >   ["bookingRef"]
+objectSchema :: [(Text, Aeson.Value)] -> [Text] -> Aeson.Value
+objectSchema props required =
+  Aeson.object
+    [ "type" .= ("object" :: Text),
+      "properties" .= Aeson.Object (KeyMap.fromList [(Key.fromText k, v) | (k, v) <- props]),
+      "required" .= required,
+      "additionalProperties" .= False
+    ]
+
+-- | A string property with a description.
+stringProp :: Text -> Aeson.Value
+stringProp desc =
+  Aeson.object
+    [ "type" .= ("string" :: Text),
+      "description" .= desc
+    ]
+
+-- | An enum property with allowed values and a description.
+enumProp :: [Text] -> Text -> Aeson.Value
+enumProp values desc =
+  Aeson.object
+    [ "type" .= ("string" :: Text),
+      "enum" .= values,
+      "description" .= desc
+    ]

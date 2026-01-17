@@ -5,9 +5,10 @@ import Data.Text qualified as T
 import Examples.AirCanada.MockDB (initialDB)
 import Examples.AirCanada.Tools (airCanadaToolkit)
 import Examples.AirCanada.Types (AirlineDB)
-import Sentinel.Agent (AgentConfig (..), Message, defaultConfig, initialMessages, runAgent)
-import Sentinel.Tool (Toolkit)
 import Pre (Ann, Doc, putDocLn, renderDocPlain, vsep, wrappedText)
+import Sentinel.Agent (AgentConfig (..), AgentM, Message, defaultConfig, runAgent)
+import Sentinel.LLM qualified as LLM
+import Sentinel.Tool qualified as Tool
 import System.Console.Haskeline (InputT, defaultSettings, getInputLine, outputStrLn, runInputT)
 import System.Environment (lookupEnv)
 import Prelude
@@ -79,16 +80,16 @@ main = do
       let toolkit = airCanadaToolkit
           db = initialDB
 
-      let modelName = case config of AgentConfig {model} -> T.pack (show model)
+      let modelName = T.pack (show config.llmConfig.model)
       putDocLn (readyDoc modelName)
 
-      repl config toolkit db (initialMessages toolkit)
+      repl config toolkit db [] 0
 
-repl :: AgentConfig -> Toolkit AirlineDB -> AirlineDB -> [Message] -> IO ()
-repl config toolkit db history = runInputT defaultSettings (loop db history)
+repl :: AgentConfig -> Tool.Toolkit (AgentM AirlineDB) -> AirlineDB -> [Message] -> Int -> IO ()
+repl config toolkit db history turnCount = runInputT defaultSettings (loop db history turnCount)
   where
-    loop :: AirlineDB -> [Message] -> InputT IO ()
-    loop currentDb hist = do
+    loop :: AirlineDB -> [Message] -> Int -> InputT IO ()
+    loop currentDb hist currentTurnCount = do
       minput <- getInputLine "\n> "
       case minput of
         Nothing -> outputStrLn (T.unpack $ "\n" <> renderDocPlain goodbyeDoc)
@@ -96,6 +97,6 @@ repl config toolkit db history = runInputT defaultSettings (loop db history)
           | T.toLower (T.strip (T.pack input)) `elem` ["quit", "exit", "q"] ->
               outputStrLn (T.unpack $ "\n" <> renderDocPlain goodbyeDoc)
           | otherwise -> do
-              (response, newDb, newHist) <- liftIO $ runAgent config toolkit currentDb hist (T.pack input)
+              (response, newDb, newHist, newTurnCount) <- liftIO $ runAgent config toolkit currentDb hist currentTurnCount (T.pack input)
               outputStrLn (T.unpack $ "\n" <> renderDocPlain (agentResponseDoc response))
-              loop newDb newHist
+              loop newDb newHist newTurnCount

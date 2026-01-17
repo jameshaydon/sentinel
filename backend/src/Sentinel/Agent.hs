@@ -6,54 +6,21 @@ module Sentinel.Agent
     Message (..),
     runAgent,
     defaultConfig,
-    initialMessages,
     runAgentM,
   )
 where
 
-import Control.Exception (SomeException, try)
 import Control.Monad.State.Strict
 import Data.Aeson qualified as Aeson
-import Data.Aeson.KeyMap qualified as KeyMap
-import Data.Text qualified as T
 import Data.Text.Encoding qualified as T
-import Data.Vector (Vector)
 import Data.Vector qualified as Vector
-import OpenAI.V1 (Methods (..), getClientEnv, makeMethods)
-import OpenAI.V1.Chat.Completions
-  ( ChatCompletionObject (..),
-    Choice (..),
-    _CreateChatCompletion,
-  )
 import OpenAI.V1.Chat.Completions qualified as Chat
-import OpenAI.V1.Models (Model)
-import OpenAI.V1.Tool qualified as OpenAI
 import OpenAI.V1.ToolCall qualified as ToolCall
 import Pre
+import Sentinel.LLM (Message (..))
+import Sentinel.LLM qualified as LLM
 import Sentinel.Output qualified as Output
 import Sentinel.Tool qualified as Tool
-import Servant.Client (ClientEnv)
-
---------------------------------------------------------------------------------
--- Message Types
---------------------------------------------------------------------------------
-
--- | A message in the conversation (our internal representation).
-data Message
-  = -- | System message. This is the message which sets the context of the whole
-    -- conversation.
-    --
-    -- TODO: we should move this somewhere else.
-    SystemMsg Text
-  | -- | User message. This is a message from the (human) end-user.
-    UserMsg Text
-  | -- | LLM message. First argument is text content, second is tool calls it
-    -- wants to make.
-    AssistantMsg (Maybe Text) (Maybe (Vector ToolCall.ToolCall))
-  | -- | Tool result message with call ID and result. This is the result of a
-    -- tool call.
-    ToolMsg Text Text
-  deriving stock (Show)
 
 --------------------------------------------------------------------------------
 -- Configuration
@@ -61,239 +28,173 @@ data Message
 
 -- | Configuration for the agent.
 data AgentConfig = AgentConfig
-  { clientEnv :: ClientEnv,
-    apiKey :: Text,
-    model :: Model,
+  { llmConfig :: LLM.LLMConfig,
     maxIterations :: Int,
-    maxMessages :: Int,
-    debug :: Bool
+    maxMessages :: Int
   }
 
 -- | Create default configuration using OpenAI API.
 defaultConfig :: Text -> IO AgentConfig
 defaultConfig key = do
-  clientEnv <- getClientEnv "https://api.openai.com"
+  llmConfig <- LLM.defaultConfig key
   pure
     AgentConfig
-      { clientEnv = clientEnv,
-        apiKey = key,
-        model = "gpt-5-nano-2025-08-07",
+      { llmConfig = llmConfig,
         maxIterations = 10,
-        maxMessages = 50,
-        debug = True
+        maxMessages = 50
       }
 
 --------------------------------------------------------------------------------
 -- AgentM Monad
 --------------------------------------------------------------------------------
 
-data AgentEnv db = AgentEnv
-  { config :: AgentConfig,
-    toolkit :: Tool.Toolkit db
-  }
-
 data AgentState db = AgentState
   { db :: db,
-    messages :: [Message]
+    -- | Messages stored in reverse order (newest first) for efficient prepending.
+    messages :: [Message],
+    turnCount :: !Int,
+    iterationCount :: !Int
   }
+  deriving stock (Generic)
 
 type AgentM db = ReaderT (AgentEnv db) (StateT (AgentState db) IO)
+
+data AgentEnv db = AgentEnv
+  { config :: AgentConfig,
+    toolkit :: Tool.Toolkit (AgentM db),
+    systemPrompt :: Text
+  }
 
 runAgentM :: AgentEnv db -> AgentState db -> AgentM db a -> IO (a, AgentState db)
 runAgentM env initialState action =
   runStateT (runReaderT action env) initialState
 
 --------------------------------------------------------------------------------
--- Message Conversion
---------------------------------------------------------------------------------
-
--- | Convert our Message type to the OpenAI Message type.
-toOpenAIMessage :: Message -> Chat.Message (Vector Chat.Content)
-toOpenAIMessage = \case
-  SystemMsg txt ->
-    Chat.System
-      { content = Vector.singleton (Chat.Text {text = txt}),
-        name = Nothing
-      }
-  UserMsg txt ->
-    Chat.User
-      { content = Vector.singleton (Chat.Text {text = txt}),
-        name = Nothing
-      }
-  AssistantMsg mContent mToolCalls ->
-    Chat.Assistant
-      { assistant_content = fmap (Vector.singleton . Chat.Text) mContent,
-        name = Nothing,
-        refusal = Nothing,
-        assistant_audio = Nothing,
-        tool_calls = mToolCalls
-      }
-  ToolMsg callId result ->
-    Chat.Tool
-      { content = Vector.singleton (Chat.Text {text = result}),
-        tool_call_id = callId
-      }
-
---------------------------------------------------------------------------------
 -- Context Window Management
 --------------------------------------------------------------------------------
 
--- | Trim history to fit within maxMessages, always keeping the system prompt.
+-- | Trim history to keep only the most recent messages.
+-- Since messages are stored in reverse order, we just take from the front.
 trimHistory :: Int -> [Message] -> [Message]
-trimHistory maxMsgs msgs
-  | length msgs <= maxMsgs = msgs
-  | otherwise =
-      case msgs of
-        (sys@(SystemMsg _) : rest) ->
-          -- Keep system message + last (maxMsgs - 1) messages
-          sys : drop (length rest - (maxMsgs - 1)) rest
-        _ ->
-          -- No system message, just keep last maxMsgs
-          drop (length msgs - maxMsgs) msgs
+trimHistory maxMsgs = take maxMsgs
 
 --------------------------------------------------------------------------------
 -- LLM API
 --------------------------------------------------------------------------------
 
--- | Call the OpenAI API with native tool support.
-callLLM :: [OpenAI.Tool] -> AgentM db (Either Text (Chat.Message Text))
+callLLM :: [LLM.Tool] -> AgentM db (Either Text (Chat.Message Text))
 callLLM tools = do
   env <- ask
-  st <- get
-  let trimmedMsgs = trimHistory env.config.maxMessages st.messages
-      methods = makeMethods env.config.clientEnv env.config.apiKey Nothing Nothing
-      openAIMessages = Vector.fromList (map toOpenAIMessage trimmedMsgs)
-      request =
-        _CreateChatCompletion
-          { Chat.messages = openAIMessages,
-            Chat.model = env.config.model,
-            Chat.tools =
-              if null tools
-                then Nothing
-                else Just (Vector.fromList tools),
-            Chat.tool_choice =
-              if null tools
-                then Nothing
-                else Just OpenAI.ToolChoiceAuto
-          }
-  result <- liftIO $ try @SomeException (methods.createChatCompletion request)
-  pure $ case result of
-    Left err -> Left (T.pack (show err))
-    Right ChatCompletionObject {choices} ->
-      case Vector.uncons choices of
-        Nothing -> Left "No choices returned from API"
-        Just (Choice {message}, _) -> Right message
+  msgs <- use #messages
+  let trimmedMsgs = trimHistory env.config.maxMessages msgs
+      -- Reverse to get chronological order for the API
+      chronologicalMsgs = reverse trimmedMsgs
+  liftIO $ LLM.callChatCompletion env.config.llmConfig env.systemPrompt chronologicalMsgs tools
 
 --------------------------------------------------------------------------------
 -- Tool Execution
 --------------------------------------------------------------------------------
 
--- | Extract the input from tool call arguments JSON.
-extractToolInput :: Text -> Maybe Text
-extractToolInput argsJson =
-  case Aeson.decodeStrict (T.encodeUtf8 argsJson) of
-    Just (Aeson.Object obj) ->
-      case KeyMap.lookup "input" obj of
-        Just (Aeson.String input) -> Just input
-        _ -> Nothing
-    _ -> Nothing
-
 -- | Process a single tool call and return the result message.
 processToolCall :: ToolCall.ToolCall -> AgentM db Message
 processToolCall (ToolCall.ToolCall_Function {id = callId, function = fn}) = do
   env <- ask
-  st <- get
   let toolName = fn.name
       argsJson = fn.arguments
-      mInput = extractToolInput argsJson
 
-  liftIO $ putDispLn (Output.ToolUse toolName (fromMaybe argsJson mInput))
+  liftIO $ putDispLn (Output.ToolUse toolName argsJson)
 
-  let (result, newDb) = case mInput of
-        Nothing -> (Tool.ToolError $ "Failed to parse arguments: " <> argsJson, st.db)
-        Just input -> env.toolkit.executeTool toolName input st.db
+  -- Decode the raw JSON string from OpenAI into a Value
+  let mArgs = Aeson.decodeStrict (T.encodeUtf8 argsJson) :: Maybe Aeson.Value
 
-      observation = case result of
-        Tool.ToolSuccess txt -> txt
-        Tool.ToolError err -> "ERROR: " <> err
+  result <- case mArgs of
+    Nothing -> pure $ Left $ "Could not parse arguments JSON: " <> argsJson
+    Just args -> do
+      -- Find the tool in the list
+      let foundTool = find (\t -> t.toolName == toolName) env.toolkit.tools
+      case foundTool of
+        Nothing -> pure $ Left $ "Tool not found: " <> toolName
+        Just tool -> do
+          -- Execute the tool action (which can modify DB state via 'modify')
+          runExceptT (tool.toolAction args)
 
-  modify \s -> s {db = newDb}
+  let resultText = either ("ERROR: " <>) (\x -> x) result
+  liftIO $ case result of
+    Left err -> putDispLn (Output.ToolError err)
+    Right obs -> putDispLn (Output.Observation obs)
 
-  liftIO $ putDispLn (Output.Observation observation)
-
-  pure $ ToolMsg callId observation
+  pure $ ToolMsg callId resultText
 
 --------------------------------------------------------------------------------
 -- Main Agent Loop
 --------------------------------------------------------------------------------
 
--- | Create initial messages with the system prompt from the toolkit.
-initialMessages :: Tool.Toolkit db -> [Message]
-initialMessages toolkit = [SystemMsg toolkit.systemPrompt]
-
--- | Run the agent with a user query.
--- Returns the response, the updated database, and the updated conversation history.
---
--- This will /loop/, executing tool calls, etc. It terminates when the LLM
--- returns a "final response" message (i.e. no tool calls). (Or if the maximum
--- number of iterations is reached.)
-runAgent :: AgentConfig -> Tool.Toolkit db -> db -> [Message] -> Text -> IO (Text, db, [Message])
-runAgent config toolkit db history userQuery = do
-  putDispLn (Output.AgentStart userQuery)
-  let env = AgentEnv {config, toolkit}
-      initialState = AgentState {db, messages = history <> [UserMsg userQuery]}
+runAgent ::
+  AgentConfig ->
+  Tool.Toolkit (AgentM db) ->
+  db ->
+  [Message] ->
+  Int ->
+  Text ->
+  IO (Text, db, [Message], Int)
+runAgent config toolkit db history turnCount userQuery = do
+  let newTurnCount = turnCount + 1
+  putDispLn (Output.TurnStart newTurnCount userQuery)
+  let env =
+        AgentEnv
+          { config,
+            toolkit,
+            systemPrompt = toolkit.systemPrompt
+          }
+      initialState =
+        AgentState
+          { db,
+            messages = UserMsg userQuery : history,
+            turnCount = newTurnCount,
+            iterationCount = 0
+          }
   (response, finalState) <- runAgentM env initialState agentLoop
-  pure (response, finalState.db, finalState.messages)
+  pure (response, finalState.db, finalState.messages, finalState.turnCount)
 
 agentLoop :: AgentM db Text
 agentLoop = do
   env <- ask
-  st <- get
-  let iteration = countIterations st.messages
+  iteration <- use #iterationCount
   if iteration > env.config.maxIterations
     then do
       let response = "I apologize, but I was unable to complete your request. Please try again or contact support."
-      modify \s -> s {messages = s.messages <> [AssistantMsg (Just response) Nothing]}
+      #messages %= (AssistantMsg (Just response) Nothing :)
       pure response
     else do
       liftIO $ putDispLn (Output.Iteration iteration)
+      #iterationCount += 1
       let openAITools = Tool.toOpenAITool <$> env.toolkit.tools
       result <- callLLM openAITools
       case result of
         Left err -> do
           liftIO $ putDispLn (Output.Error err)
           let response = "I encountered an error: " <> err
-          modify \s -> s {messages = s.messages <> [AssistantMsg (Just response) Nothing]}
+          #messages %= (AssistantMsg (Just response) Nothing :)
           pure response
         Right msg ->
           handleResponse msg
-  where
-    -- Count iterations based on assistant messages in history
-    countIterations :: [Message] -> Int
-    countIterations = length . filter isAssistantMsg
-      where
-        isAssistantMsg (AssistantMsg _ _) = True
-        isAssistantMsg _ = False
 
--- | Handle an LLM response, processing tool calls or returning final answer.
 handleResponse :: Chat.Message Text -> AgentM db Text
 handleResponse msg = case msg of
   Chat.Assistant {assistant_content, tool_calls} ->
     case tool_calls of
       Just calls | not (Vector.null calls) -> do
-        -- There are tool calls to process
-        modify \s -> s {messages = s.messages <> [AssistantMsg assistant_content (Just calls)]}
+        #messages %= (AssistantMsg assistant_content (Just calls) :)
         toolResults <- traverse processToolCall (Vector.toList calls)
-        modify \s -> s {messages = s.messages <> toolResults}
+        -- Prepend tool results in reverse order so they end up in correct order
+        #messages %= (reverse toolResults ++)
         agentLoop
       _ -> do
-        -- No tool calls - this is the final response
         let response = fromMaybe "" assistant_content
         liftIO $ putDispLn (Output.FinalAnswer response)
-        modify \s -> s {messages = s.messages <> [AssistantMsg (Just response) Nothing]}
+        #messages %= (AssistantMsg (Just response) Nothing :)
         pure response
   _ -> do
-    -- Unexpected message type
     let response = "Unexpected response format from LLM"
-    modify \s -> s {messages = s.messages <> [AssistantMsg (Just response) Nothing]}
+    #messages %= (AssistantMsg (Just response) Nothing :)
     pure response
