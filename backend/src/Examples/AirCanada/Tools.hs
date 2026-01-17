@@ -8,7 +8,7 @@ import Data.Aeson qualified as Aeson
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Text qualified as T
-import Examples.AirCanada.MockDB
+import Examples.AirCanada.MockDB (attemptRefund, checkRefundEligibility, getBooking, getFlight, listBookingsForPassenger)
 import Examples.AirCanada.Refund (DeathCircumstance (..), SpecialException (..))
 import Examples.AirCanada.Types
 import Pre
@@ -26,6 +26,7 @@ retrieveBookingTool =
         Schema.objectSchema
           [("bookingRef", Schema.stringProp "The 6-character booking reference (e.g., REF123)")]
           ["bookingRef"],
+      toolGuard = \_ -> pure Nothing,
       toolAction = \args -> do
         ref <- extractString "bookingRef" args ??: "Missing or invalid 'bookingRef' parameter"
         st <- lift get
@@ -44,6 +45,7 @@ checkFlightTool =
         Schema.objectSchema
           [("flightNumber", Schema.stringProp "The flight number (e.g., AC101)")]
           ["flightNumber"],
+      toolGuard = \_ -> pure Nothing,
       toolAction = \args -> do
         flightNum <- extractString "flightNumber" args ??: "Missing or invalid 'flightNumber' parameter"
         st <- lift get
@@ -67,6 +69,18 @@ processRefundTool =
             ("reason", Schema.enumProp ["jury", "military", "death"] "Optional special circumstance reason: jury (jury duty), military (military orders), death (death circumstances)")
           ]
           ["bookingRef"],
+      toolGuard = \args -> do
+        let mRef = extractString "bookingRef" args
+        case mRef of
+          Nothing -> pure $ Just "Missing or invalid 'bookingRef' parameter"
+          Just ref -> do
+            let specialReason = case extractString "reason" args of
+                  Just "jury" -> Just JuryDuty
+                  Just "military" -> Just MilitaryOrders
+                  Just "death" -> Just (Death PassengerDeath)
+                  _ -> Nothing
+            st <- get
+            pure $ checkRefundEligibility (T.toUpper ref) specialReason st.db,
       toolAction = \args -> do
         ref <- extractString "bookingRef" args ??: "Missing or invalid 'bookingRef' parameter"
         let specialReason = case extractString "reason" args of
@@ -90,6 +104,7 @@ searchBookingsTool =
         Schema.objectSchema
           [("passengerName", Schema.stringProp "The passenger's full name")]
           ["passengerName"],
+      toolGuard = \_ -> pure Nothing,
       toolAction = \args -> do
         name <- extractString "passengerName" args ??: "Missing or invalid 'passengerName' parameter"
         st <- lift get

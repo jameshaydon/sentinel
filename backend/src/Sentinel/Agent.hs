@@ -115,8 +115,16 @@ processToolCall (ToolCall.ToolCall_Function {id = callId, function = fn}) = do
       case foundTool of
         Nothing -> pure $ Left $ "Tool not found: " <> toolName
         Just tool -> do
-          -- Execute the tool action (which can modify DB state via 'modify')
-          runExceptT (tool.toolAction args)
+          -- Check the guard first
+          guardResult <- tool.toolGuard args
+          case guardResult of
+            Just reason -> do
+              liftIO $ putDispLn (Output.GuardDenied toolName reason)
+              pure $ Left $ "Guard denied: " <> reason
+            Nothing -> do
+              liftIO $ putDispLn (Output.GuardPass toolName)
+              -- Execute the tool action (which can modify DB state via 'modify')
+              runExceptT (tool.toolAction args)
 
   let resultText = either ("ERROR: " <>) (\x -> x) result
   liftIO $ case result of

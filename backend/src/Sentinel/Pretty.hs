@@ -26,6 +26,7 @@ module Sentinel.Pretty
     styledObservation,
     finalAnswer,
     errorText,
+    successText,
     userText,
     iterationNum,
     quoted,
@@ -153,6 +154,10 @@ finalAnswer = styled AnnFinalAnswer
 -- | Style text as an error.
 errorText :: Doc Ann -> Doc Ann
 errorText = styled AnnError
+
+-- | Style text as a success indicator.
+successText :: Doc Ann -> Doc Ann
+successText = styled AnnSuccess
 
 -- | Style text as user input.
 userText :: Doc Ann -> Doc Ann

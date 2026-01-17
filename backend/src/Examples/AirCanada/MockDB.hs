@@ -4,6 +4,7 @@ module Examples.AirCanada.MockDB
     getFlight,
     getFlightStatus,
     attemptRefund,
+    checkRefundEligibility,
     listBookingsForPassenger,
     currentTime,
   )
@@ -275,6 +276,43 @@ outcomeToStatus = \case
 updateBookingStatus :: Text -> BookingStatus -> AirlineDB -> AirlineDB
 updateBookingStatus ref newStatus db =
   db {bookingsTable = M.adjust (\b -> b {bookingStatus = newStatus}) ref db.bookingsTable}
+
+-- | Check if a refund is allowed without performing it.
+-- Returns Nothing if allowed, Just reason if denied.
+checkRefundEligibility :: Text -> Maybe SpecialException -> AirlineDB -> Maybe Text
+checkRefundEligibility ref specialReason db =
+  case getBooking ref db of
+    Nothing -> Just $ "Booking reference '" <> ref <> "' not found."
+    Just booking ->
+      case getFlight booking.flightNo db of
+        Nothing -> Just $ "Flight " <> booking.flightNo <> " not found in system."
+        Just flight ->
+          let reason = inferRefundReason flight.status specialReason
+              ticket = bookingToTicket booking
+              request =
+                RefundRequest
+                  { ticket = ticket,
+                    reason = reason,
+                    requestTime = currentTime,
+                    tripNowPointless = flight.status == Cancelled,
+                    hasDocumentation = isJust specialReason
+                  }
+              outcome = calculateRefund request
+           in case outcome of
+                NoRefund ->
+                  Just
+                    $ "Booking "
+                    <> ref
+                    <> " is not eligible for a refund. "
+                    <> "Economy Basic tickets are non-refundable and do not qualify for travel credits."
+                ContactAgency src ->
+                  Just
+                    $ "Booking "
+                    <> ref
+                    <> " was purchased through a "
+                    <> (case src of TravelAgency -> "travel agency"; OtherAirline -> "partner airline"; _ -> "third party")
+                    <> ". Please contact them directly to process your refund request."
+                _ -> Nothing -- Refund is allowed
 
 -- | Attempt to process a refund for a booking.
 -- Accepts an optional special reason (jury, military, death).

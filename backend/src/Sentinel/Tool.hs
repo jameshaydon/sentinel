@@ -17,6 +17,9 @@ data Tool m = Tool
     toolDescription :: Text,
     -- | Full JSON Schema for arguments
     toolParams :: Value,
+    -- | Guard: checks if tool invocation is allowed. Returns Nothing if
+    -- allowed, Just reason if denied. Run before toolAction.
+    toolGuard :: Value -> m (Maybe Text),
     -- | Logic: takes JSON args, performs effects. Throws on error.
     toolAction :: Value -> ExceptT Text m Text
   }

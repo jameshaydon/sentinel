@@ -10,6 +10,8 @@ module Sentinel.Output
     Error (..),
     Iteration (..),
     TurnStart (..),
+    GuardPass (..),
+    GuardDenied (..),
   )
 where
 
@@ -144,3 +146,32 @@ instance Disp TurnStart where
         "",
         label "User Query:" <+> userText (wrappedText query)
       ]
+
+-- | Guard check passed
+data GuardPass = GuardPass {guardToolName :: Text}
+  deriving stock (Show, Eq, Generic)
+
+instance Disp GuardPass where
+  disp (GuardPass tool) =
+    nest 4
+      $ vsep
+        [ "",
+          successText "✓" <+> label "Guard passed for" <+> styledToolName (pretty tool)
+        ]
+
+-- | Guard check denied
+data GuardDenied = GuardDenied
+  { deniedToolName :: Text,
+    denialReason :: Text
+  }
+  deriving stock (Show, Eq, Generic)
+
+instance Disp GuardDenied where
+  disp (GuardDenied tool reason) =
+    nest 4
+      $ vsep
+        [ "",
+          errorText "✗ Guard denied for" <+> styledToolName (pretty tool),
+          "",
+          errorText (wrappedText reason)
+        ]
