@@ -32,12 +32,7 @@ module Pre
     module Control.Monad.Reader,
     headMay,
     module Data.Proxy,
-    putDispLn,
-    putDocLn,
-    renderDoc,
-    renderDocPlain,
-    Disp (..),
-    Ann,
+    module Sentinel.Pretty,
     module Prettyprinter,
     pPrint,
     pTraceShow,
@@ -86,10 +81,6 @@ module Pre
     -- * Constraints
     Unconstrained,
 
-    -- * Doc helpers
-    quoted,
-    boldText,
-    wrappedText,
   )
 where
 
@@ -134,39 +125,10 @@ import Debug.Pretty.Simple (pTraceShow)
 import GHC.Generics (Generic, Generic1)
 import Generic.Data (Generically (..), Generically1 (..))
 import Prettyprinter
-import Prettyprinter.Render.Terminal (AnsiStyle, bold)
-import Prettyprinter.Render.Terminal qualified as Terminal
-import Prettyprinter.Render.Text qualified as Text
 import Safe (headMay)
+import Sentinel.Pretty
 import Text.Pretty.Simple (pPrint)
 import Prelude hiding (id, unzip, (.))
-
--- | Annotation type for pretty-printing with ANSI styling.
-type Ann = AnsiStyle
-
--- | Layout options with a maximum line width of 140 characters
-layoutOpts :: LayoutOptions
-layoutOpts = LayoutOptions (AvailablePerLine 140 1.0)
-
--- | Render a Doc to Text with ANSI styling
-renderDoc :: Doc Ann -> Text
-renderDoc = Terminal.renderStrict . layoutPretty layoutOpts
-
--- | Render a Doc to plain Text without any styling
-renderDocPlain :: Doc ann -> Text
-renderDocPlain = Text.renderStrict . layoutPretty layoutOpts
-
--- | Print a Doc to stdout, followed by a newline
-putDocLn :: Doc Ann -> IO ()
-putDocLn doc = putStrLn (Text.unpack (renderDoc doc))
-
-putDispLn :: (Disp a) => a -> IO ()
-putDispLn = putDocLn . disp
-
--- | A class for things that have a canonical representation as a sequence of
--- characters.
-class Disp a where
-  disp :: a -> Doc Ann
 
 infixr 0 ??:
 
@@ -221,19 +183,3 @@ setMapMaybe p = Set.fromList . mapMaybe p . toList
 class Unconstrained a
 
 instance Unconstrained a
-
--- | Wrap a Doc in single quotes for display.
-quoted :: Doc Ann -> Doc Ann
-quoted d = "'" <> d <> "'"
-
--- | Make text bold
-boldText :: Doc Ann -> Doc Ann
-boldText = annotate bold
-
--- | Wrap text respecting line breaks and allowing proper text reflow.
--- Uses fillSep to wrap words within each line, preserving explicit line breaks.
-wrappedText :: Text -> Doc Ann
-wrappedText txt =
-  let textLines = Text.lines txt
-      wrapLine ln = fillSep (pretty <$> Text.words ln)
-   in vsep (wrapLine <$> textLines)

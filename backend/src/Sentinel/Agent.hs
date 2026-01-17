@@ -1,6 +1,7 @@
 module Sentinel.Agent
   ( AgentConfig (..),
     AgentEnv (..),
+    AgentState (..),
     AgentM,
     Message (..),
     runAgent,
@@ -88,15 +89,19 @@ defaultConfig key = do
 
 data AgentEnv db = AgentEnv
   { config :: AgentConfig,
-    toolkit :: Toolkit db,
-    db :: db
+    toolkit :: Toolkit db
   }
 
-type AgentM db = ReaderT (AgentEnv db) (StateT [Message] IO)
+data AgentState db = AgentState
+  { db :: db,
+    messages :: [Message]
+  }
 
-runAgentM :: AgentEnv db -> [Message] -> AgentM db a -> IO (a, [Message])
-runAgentM env initialMsgs action =
-  runStateT (runReaderT action env) initialMsgs
+type AgentM db = ReaderT (AgentEnv db) (StateT (AgentState db) IO)
+
+runAgentM :: AgentEnv db -> AgentState db -> AgentM db a -> IO (a, AgentState db)
+runAgentM env initialState action =
+  runStateT (runReaderT action env) initialState
 
 --------------------------------------------------------------------------------
 -- Message Conversion
@@ -154,8 +159,8 @@ trimHistory maxMsgs msgs
 callLLM :: [OpenAI.Tool] -> AgentM db (Either Text (Chat.Message Text))
 callLLM tools = do
   env <- ask
-  msgs <- get
-  let trimmedMsgs = trimHistory env.config.maxMessages msgs
+  st <- get
+  let trimmedMsgs = trimHistory env.config.maxMessages st.messages
       methods = makeMethods env.config.clientEnv env.config.apiKey Nothing Nothing
       openAIMessages = Vector.fromList (map toOpenAIMessage trimmedMsgs)
       request =
@@ -197,19 +202,22 @@ extractToolInput argsJson =
 processToolCall :: ToolCall.ToolCall -> AgentM db Message
 processToolCall (ToolCall.ToolCall_Function {id = callId, function = fn}) = do
   env <- ask
+  st <- get
   let toolName = fn.name
       argsJson = fn.arguments
       mInput = extractToolInput argsJson
 
   liftIO $ putDispLn (ToolUse toolName (fromMaybe argsJson mInput))
 
-  let result = case mInput of
-        Nothing -> ToolError $ "Failed to parse arguments: " <> argsJson
-        Just input -> env.toolkit.executeTool toolName input env.db
+  let (result, newDb) = case mInput of
+        Nothing -> (ToolError $ "Failed to parse arguments: " <> argsJson, st.db)
+        Just input -> env.toolkit.executeTool toolName input st.db
 
       observation = case result of
         ToolSuccess txt -> txt
         ToolError err -> "ERROR: " <> err
+
+  modify \s -> s {db = newDb}
 
   liftIO $ putDispLn (Observation observation)
 
@@ -224,27 +232,28 @@ initialMessages :: Toolkit db -> [Message]
 initialMessages toolkit = [SystemMsg toolkit.systemPrompt]
 
 -- | Run the agent with a user query.
--- Returns the response and the updated conversation history.
+-- Returns the response, the updated database, and the updated conversation history.
 --
 -- This will /loop/, executing tool calls, etc. It terminates when the LLM
 -- returns a "final response" message (i.e. no tool calls). (Or if the maximum
 -- number of iterations is reached.)
-runAgent :: AgentConfig -> Toolkit db -> db -> [Message] -> Text -> IO (Text, [Message])
+runAgent :: AgentConfig -> Toolkit db -> db -> [Message] -> Text -> IO (Text, db, [Message])
 runAgent config toolkit db history userQuery = do
   putDispLn (AgentStart userQuery)
-  let env = AgentEnv {config, toolkit, db}
-      initialMsgs = history <> [UserMsg userQuery]
-  runAgentM env initialMsgs agentLoop
+  let env = AgentEnv {config, toolkit}
+      initialState = AgentState {db, messages = history <> [UserMsg userQuery]}
+  (response, finalState) <- runAgentM env initialState agentLoop
+  pure (response, finalState.db, finalState.messages)
 
 agentLoop :: AgentM db Text
 agentLoop = do
   env <- ask
-  msgs <- get
-  let iteration = countIterations msgs
+  st <- get
+  let iteration = countIterations st.messages
   if iteration > env.config.maxIterations
     then do
       let response = "I apologize, but I was unable to complete your request. Please try again or contact support."
-      modify (<> [AssistantMsg (Just response) Nothing])
+      modify \s -> s {messages = s.messages <> [AssistantMsg (Just response) Nothing]}
       pure response
     else do
       liftIO $ putDispLn (Iteration iteration)
@@ -254,7 +263,7 @@ agentLoop = do
         Left err -> do
           liftIO $ putDispLn (Error err)
           let response = "I encountered an error: " <> err
-          modify (<> [AssistantMsg (Just response) Nothing])
+          modify \s -> s {messages = s.messages <> [AssistantMsg (Just response) Nothing]}
           pure response
         Right msg ->
           handleResponse msg
@@ -273,18 +282,18 @@ handleResponse msg = case msg of
     case tool_calls of
       Just calls | not (Vector.null calls) -> do
         -- There are tool calls to process
-        modify (<> [AssistantMsg assistant_content (Just calls)])
+        modify \s -> s {messages = s.messages <> [AssistantMsg assistant_content (Just calls)]}
         toolResults <- traverse processToolCall (Vector.toList calls)
-        modify (<> toolResults)
+        modify \s -> s {messages = s.messages <> toolResults}
         agentLoop
       _ -> do
         -- No tool calls - this is the final response
         let response = fromMaybe "" assistant_content
         liftIO $ putDispLn (FinalAnswer response)
-        modify (<> [AssistantMsg (Just response) Nothing])
+        modify \s -> s {messages = s.messages <> [AssistantMsg (Just response) Nothing]}
         pure response
   _ -> do
     -- Unexpected message type
     let response = "Unexpected response format from LLM"
-    modify (<> [AssistantMsg (Just response) Nothing])
+    modify \s -> s {messages = s.messages <> [AssistantMsg (Just response) Nothing]}
     pure response

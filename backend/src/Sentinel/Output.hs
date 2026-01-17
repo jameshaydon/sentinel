@@ -22,9 +22,9 @@ instance Disp Thinking where
     nest 4 $
       vsep
         [ "",
-          boldText "## Thinking",
+          subheader "## Thinking",
           "",
-          wrappedText thought
+          thinking (wrappedText thought)
         ]
 
 -- | Agent's final answer to the user
@@ -36,9 +36,9 @@ instance Disp FinalAnswer where
     nest 4 $
       vsep
         [ "",
-          boldText "## Final Answer",
+          subheader "## Final Answer",
           "",
-          wrappedText answer
+          finalAnswer (wrappedText answer)
         ]
 
 -- | Agent using a tool
@@ -53,10 +53,10 @@ instance Disp ToolUse where
     nest 4 $
       vsep
         [ "",
-          boldText "## Tool Use",
+          subheader "## Tool Use",
           "",
-          boldText "Tool:" <+> pretty tool,
-          boldText "Input:" <+> wrappedText input
+          label "Tool:" <+> styledToolName (pretty tool),
+          label "Input:" <+> dimText (wrappedText input)
         ]
 
 -- | Result/observation from a tool execution
@@ -68,9 +68,9 @@ instance Disp Observation where
     nest 4 $
       vsep
         [ "",
-          boldText "## Result",
+          subheader "## Observation",
           "",
-          wrappedText result
+          styledObservation (wrappedText result)
         ]
 
 -- | Conversational response from the agent (not in ReAct format)
@@ -82,7 +82,7 @@ instance Disp Response where
     nest 4 $
       vsep
         [ "",
-          boldText "## Response",
+          subheader "## Response",
           "",
           wrappedText resp
         ]
@@ -96,9 +96,9 @@ instance Disp Error where
     nest 4 $
       vsep
         [ "",
-          boldText "## Error",
+          errorText "## Error",
           "",
-          "LLM Error:" <+> wrappedText err
+          errorText (label "LLM Error:" <+> wrappedText err)
         ]
 
 -- | Iteration header/marker
@@ -110,7 +110,7 @@ instance Disp Iteration where
     nest 2 $
       vsep
         [ "",
-          boldText ("# Iteration" <+> pretty n)
+          header "# Iteration" <+> iterationNum (pretty n)
         ]
 
 -- | Agent start marker with user query
@@ -121,7 +121,7 @@ instance Disp AgentStart where
   disp (AgentStart query) =
     vsep
       [ "",
-        boldText "# Agent Start",
+        header "# Agent Start",
         "",
-        "User Query:" <+> wrappedText query
+        label "User Query:" <+> userText (wrappedText query)
       ]

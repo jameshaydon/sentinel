@@ -1,3 +1,5 @@
+-- | Representation of tools. Tools are currently just `Text -> Text`, but can
+-- also have DB side-effects.
 module Sentinel.Tool
   ( Tool (..),
     ToolResult (..),
@@ -66,7 +68,8 @@ instance Disp ToolResult where
 -- Parameterized by the database/state type that tools operate on.
 data Toolkit db = Toolkit
   { tools :: [Tool],
-    -- Execute a tool. First arg is the tool name. Second is the tool input.
-    executeTool :: Text -> Text -> db -> ToolResult,
+    -- | Execute a tool. First arg is the tool name. Second is the tool input.
+    -- Returns the (text) result and the (potentially modified) database.
+    executeTool :: Text -> Text -> db -> (ToolResult, db),
     systemPrompt :: Text
   }

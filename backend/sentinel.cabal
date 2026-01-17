@@ -19,6 +19,7 @@ library
       Pre
       Sentinel.Agent
       Sentinel.Output
+      Sentinel.Pretty
       Sentinel.Tool
   other-modules:
       Paths_sentinel

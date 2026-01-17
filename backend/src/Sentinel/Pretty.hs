@@ -1,0 +1,179 @@
+-- | Pretty-printing with semantic annotations.
+--
+-- This module provides a 'Disp' typeclass for displaying values, along with
+-- semantic annotation types that can be converted to ANSI terminal styles.
+module Sentinel.Pretty
+  ( -- * Display typeclass
+    Disp (..),
+
+    -- * Semantic annotations
+    Ann (..),
+    toAnsiStyle,
+
+    -- * Rendering
+    renderDoc,
+    renderDocPlain,
+    putDocLn,
+    putDispLn,
+
+    -- * Style helpers
+    styled,
+    header,
+    subheader,
+    label,
+    styledToolName,
+    thinking,
+    styledObservation,
+    finalAnswer,
+    errorText,
+    userText,
+    iterationNum,
+    quoted,
+    wrappedText,
+    dimText,
+  )
+where
+
+import Data.Text (Text)
+import Data.Text qualified as Text
+import Prettyprinter
+import Prettyprinter.Render.Terminal (AnsiStyle)
+import Prettyprinter.Render.Terminal qualified as Terminal
+import Prettyprinter.Render.Text qualified as TextRender
+import Prelude
+
+-- | Semantic annotation type for pretty-printing.
+--
+-- Instead of using raw ANSI styles directly, we use semantic annotations
+-- that describe /what/ something is, not /how/ it should look. This allows
+-- for consistent theming and easier maintenance.
+data Ann
+  = -- | Main section headers (e.g., "# Iteration 1")
+    AnnHeader
+  | -- | Subsection headers (e.g., "## Thinking")
+    AnnSubheader
+  | -- | Labels for key-value pairs (e.g., "Tool:", "Input:")
+    AnnLabel
+  | -- | Tool names
+    AnnToolName
+  | -- | Agent's thinking/reasoning text
+    AnnThinking
+  | -- | Tool observation/result text
+    AnnObservation
+  | -- | Final answer text
+    AnnFinalAnswer
+  | -- | Error messages
+    AnnError
+  | -- | User input/queries
+    AnnUserText
+  | -- | Iteration numbers
+    AnnIterationNum
+  | -- | Dimmed/secondary text
+    AnnDim
+  | -- | Success indicators
+    AnnSuccess
+  deriving stock (Show, Eq)
+
+-- | Convert semantic annotations to ANSI terminal styles.
+toAnsiStyle :: Ann -> AnsiStyle
+toAnsiStyle = \case
+  AnnHeader -> Terminal.bold <> Terminal.colorDull Terminal.Blue
+  AnnSubheader -> Terminal.bold <> Terminal.colorDull Terminal.Magenta
+  AnnLabel -> Terminal.bold
+  AnnToolName -> Terminal.bold <> Terminal.colorDull Terminal.Green
+  AnnThinking -> Terminal.italicized
+  AnnObservation -> Terminal.colorDull Terminal.White
+  AnnFinalAnswer -> mempty
+  AnnError -> Terminal.bold <> Terminal.color Terminal.Red
+  AnnUserText -> Terminal.colorDull Terminal.Blue
+  AnnIterationNum -> Terminal.bold <> Terminal.colorDull Terminal.Magenta
+  AnnDim -> Terminal.colorDull Terminal.White
+  AnnSuccess -> Terminal.color Terminal.Green
+
+-- | Layout options with a maximum line width of 120 characters.
+layoutOpts :: LayoutOptions
+layoutOpts = LayoutOptions (AvailablePerLine 120 1.0)
+
+-- | Render a Doc to Text with ANSI styling.
+renderDoc :: Doc Ann -> Text
+renderDoc = Terminal.renderStrict . reAnnotateS toAnsiStyle . layoutPretty layoutOpts
+
+-- | Render a Doc to plain Text without any styling.
+renderDocPlain :: Doc ann -> Text
+renderDocPlain = TextRender.renderStrict . layoutPretty layoutOpts
+
+-- | Print a Doc to stdout, followed by a newline.
+putDocLn :: Doc Ann -> IO ()
+putDocLn doc = putStrLn (Text.unpack (renderDoc doc))
+
+-- | Print a displayable value to stdout, followed by a newline.
+putDispLn :: (Disp a) => a -> IO ()
+putDispLn = putDocLn . disp
+
+-- | A class for things that have a canonical pretty-printed representation.
+class Disp a where
+  disp :: a -> Doc Ann
+
+--------------------------------------------------------------------------------
+-- Style helpers
+--------------------------------------------------------------------------------
+
+-- | Apply a semantic style to a document.
+styled :: Ann -> Doc Ann -> Doc Ann
+styled = annotate
+
+-- | Style text as a main header.
+header :: Doc Ann -> Doc Ann
+header = styled AnnHeader
+
+-- | Style text as a subheader.
+subheader :: Doc Ann -> Doc Ann
+subheader = styled AnnSubheader
+
+-- | Style text as a label.
+label :: Doc Ann -> Doc Ann
+label = styled AnnLabel
+
+-- | Style text as a tool name.
+styledToolName :: Doc Ann -> Doc Ann
+styledToolName = styled AnnToolName
+
+-- | Style text as thinking/reasoning.
+thinking :: Doc Ann -> Doc Ann
+thinking = styled AnnThinking
+
+-- | Style text as an observation/result.
+styledObservation :: Doc Ann -> Doc Ann
+styledObservation = styled AnnObservation
+
+-- | Style text as a final answer.
+finalAnswer :: Doc Ann -> Doc Ann
+finalAnswer = styled AnnFinalAnswer
+
+-- | Style text as an error.
+errorText :: Doc Ann -> Doc Ann
+errorText = styled AnnError
+
+-- | Style text as user input.
+userText :: Doc Ann -> Doc Ann
+userText = styled AnnUserText
+
+-- | Style text as an iteration number.
+iterationNum :: Doc Ann -> Doc Ann
+iterationNum = styled AnnIterationNum
+
+-- | Style text as dimmed/secondary.
+dimText :: Doc Ann -> Doc Ann
+dimText = styled AnnDim
+
+-- | Wrap a Doc in single quotes for display.
+quoted :: Doc Ann -> Doc Ann
+quoted d = "'" <> d <> "'"
+
+-- | Wrap text respecting line breaks and allowing proper text reflow.
+-- Uses fillSep to wrap words within each line, preserving explicit line breaks.
+wrappedText :: Text -> Doc Ann
+wrappedText txt =
+  let textLines = Text.lines txt
+      wrapLine ln = fillSep (pretty <$> Text.words ln)
+   in vsep (wrapLine <$> textLines)

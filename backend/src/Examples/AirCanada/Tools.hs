@@ -90,33 +90,36 @@ parseRefundInput input =
        in (T.toUpper ref, specialReason)
     _ -> (T.toUpper $ T.strip input, Nothing)
 
-executeTool :: Text -> Text -> AirlineDB -> ToolResult
+executeTool :: Text -> Text -> AirlineDB -> (ToolResult, AirlineDB)
 executeTool toolName input db =
   case T.toLower $ T.strip toolName of
     "retrievebooking" ->
       case getBooking input db of
-        Just booking -> ToolSuccess $ renderDocPlain (disp booking)
-        Nothing -> ToolError $ "No booking found with reference: " <> input
+        Just booking -> (ToolSuccess $ renderDocPlain (disp booking), db)
+        Nothing -> (ToolError $ "No booking found with reference: " <> input, db)
     "checkflightstatus" ->
       case getFlight input db of
-        Just flight -> ToolSuccess $ renderDocPlain (disp flight)
-        Nothing -> ToolError $ "No flight found with number: " <> input
+        Just flight -> (ToolSuccess $ renderDocPlain (disp flight), db)
+        Nothing -> (ToolError $ "No flight found with number: " <> input, db)
     "initiaterefund" ->
       let (ref, specialReason) = parseRefundInput input
-       in ToolSuccess $ attemptRefund ref specialReason db
+          (result, updatedDB) = attemptRefund ref specialReason db
+       in (ToolSuccess result, updatedDB)
     "searchbookingsbyname" ->
       case listBookingsForPassenger input db of
-        [] -> ToolError $ "No bookings found for passenger: " <> input
+        [] -> (ToolError $ "No bookings found for passenger: " <> input, db)
         bookings ->
-          ToolSuccess
-            $ renderDocPlain
-            $ vsep
-              [ "Found" <+> pretty (length bookings) <+> "booking(s):",
-                mempty,
-                vsep (punctuate (line <> "---" <> line) (fmap disp bookings))
-              ]
+          ( ToolSuccess
+              $ renderDocPlain
+              $ vsep
+                [ "Found" <+> pretty (length bookings) <+> "booking(s):",
+                  mempty,
+                  vsep (punctuate (line <> "---" <> line) (fmap disp bookings))
+                ],
+            db
+          )
     _ ->
-      ToolError $ "Unknown tool: " <> toolName
+      (ToolError $ "Unknown tool: " <> toolName, db)
 
 airCanadaToolkit :: Toolkit AirlineDB
 airCanadaToolkit =

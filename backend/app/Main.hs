@@ -85,10 +85,10 @@ main = do
       repl config toolkit db (initialMessages toolkit)
 
 repl :: AgentConfig -> Toolkit AirlineDB -> AirlineDB -> [Message] -> IO ()
-repl config toolkit db history = runInputT defaultSettings (loop history)
+repl config toolkit db history = runInputT defaultSettings (loop db history)
   where
-    loop :: [Message] -> InputT IO ()
-    loop hist = do
+    loop :: AirlineDB -> [Message] -> InputT IO ()
+    loop currentDb hist = do
       minput <- getInputLine "\n> "
       case minput of
         Nothing -> outputStrLn (T.unpack $ "\n" <> renderDocPlain goodbyeDoc)
@@ -96,6 +96,6 @@ repl config toolkit db history = runInputT defaultSettings (loop history)
           | T.toLower (T.strip (T.pack input)) `elem` ["quit", "exit", "q"] ->
               outputStrLn (T.unpack $ "\n" <> renderDocPlain goodbyeDoc)
           | otherwise -> do
-              (response, newHist) <- liftIO $ runAgent config toolkit db hist (T.pack input)
+              (response, newDb, newHist) <- liftIO $ runAgent config toolkit currentDb hist (T.pack input)
               outputStrLn (T.unpack $ "\n" <> renderDocPlain (agentResponseDoc response))
-              loop newHist
+              loop newDb newHist

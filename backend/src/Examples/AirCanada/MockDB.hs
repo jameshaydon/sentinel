@@ -105,7 +105,8 @@ initialDB =
                 usage = Unused,
                 cancellationPenalty = Money 25000
               },
-          priceCents = 250000
+          priceCents = 250000,
+          bookingStatus = Active
         }
 
     -- REF456: EconomyBasic, flight Delayed → involuntary (full refund)
@@ -124,7 +125,8 @@ initialDB =
                 usage = Unused,
                 cancellationPenalty = Money 0
               },
-          priceCents = 45000
+          priceCents = 45000,
+          bookingStatus = Active
         }
 
     -- REF789: OtherNonRefundable, flight Cancelled → full involuntary refund
@@ -143,7 +145,8 @@ initialDB =
                 usage = Unused,
                 cancellationPenalty = Money 0
               },
-          priceCents = 85000
+          priceCents = 85000,
+          bookingStatus = Active
         }
 
     -- REF111: TravelAgency booking → must contact agency
@@ -162,7 +165,8 @@ initialDB =
                 usage = Unused,
                 cancellationPenalty = Money 0
               },
-          priceCents = 35000
+          priceCents = 35000,
+          bookingStatus = Active
         }
 
 -- | Retrieve a booking by reference.
@@ -256,15 +260,32 @@ formatOutcome bookingRef outcome = case outcome of
       <> ", plus a free return flight if you are currently away from home. "
       <> "Amount will be credited within 5-7 business days."
 
+-- | Determine the new booking status based on refund outcome.
+outcomeToStatus :: RefundOutcome -> BookingStatus
+outcomeToStatus = \case
+  FullRefund _ -> Refunded
+  PartialRefund _ -> Refunded
+  RefundPlusFreeReturn _ -> Refunded
+  TravelCredit _ -> RefundedWithCredit
+  ACWalletFunds _ -> RefundedWithCredit
+  NoRefund -> RefundDenied
+  ContactAgency _ -> Active -- status unchanged, must contact agency
+
+-- | Update a booking's status in the database.
+updateBookingStatus :: Text -> BookingStatus -> AirlineDB -> AirlineDB
+updateBookingStatus ref newStatus db =
+  db {bookingsTable = M.adjust (\b -> b {bookingStatus = newStatus}) ref db.bookingsTable}
+
 -- | Attempt to process a refund for a booking.
 -- Accepts an optional special reason (jury, military, death).
-attemptRefund :: Text -> Maybe SpecialException -> AirlineDB -> Text
+-- Returns the result message and the updated database.
+attemptRefund :: Text -> Maybe SpecialException -> AirlineDB -> (Text, AirlineDB)
 attemptRefund ref specialReason db =
   case getBooking ref db of
-    Nothing -> "Error: Booking reference '" <> ref <> "' not found."
+    Nothing -> ("Error: Booking reference '" <> ref <> "' not found.", db)
     Just booking ->
       case getFlight booking.flightNo db of
-        Nothing -> "Error: Flight " <> booking.flightNo <> " not found in system."
+        Nothing -> ("Error: Flight " <> booking.flightNo <> " not found in system.", db)
         Just flight ->
           let reason = inferRefundReason flight.status specialReason
               ticket = bookingToTicket booking
@@ -277,4 +298,6 @@ attemptRefund ref specialReason db =
                     hasDocumentation = isJust specialReason -- assume docs provided if special reason given
                   }
               outcome = calculateRefund request
-           in formatOutcome booking.bookingRef outcome
+              newStatus = outcomeToStatus outcome
+              updatedDB = updateBookingStatus booking.bookingRef newStatus db
+           in (formatOutcome booking.bookingRef outcome, updatedDB)

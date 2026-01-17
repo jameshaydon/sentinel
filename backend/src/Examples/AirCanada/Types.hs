@@ -2,6 +2,7 @@ module Examples.AirCanada.Types
   ( FlightStatus (..),
     Flight (..),
     Booking (..),
+    BookingStatus (..),
     TicketDetails (..),
     AirlineDB (..),
     formatCents,
@@ -25,6 +26,22 @@ formatCents cents =
   let dollars = cents `div` 100
       remainder = cents `mod` 100
    in "$" <> T.pack (show dollars) <> "." <> T.justifyRight 2 '0' (T.pack (show remainder))
+
+-- | Represents the status of a booking.
+data BookingStatus
+  = Active
+  | Refunded
+  | RefundedWithCredit
+  | RefundDenied
+  deriving stock (Show, Eq, Generic)
+  deriving anyclass (ToJSON, FromJSON)
+
+instance Disp BookingStatus where
+  disp = \case
+    Active -> "Active"
+    Refunded -> "Refunded"
+    RefundedWithCredit -> "Travel Credit Issued"
+    RefundDenied -> "Refund Denied"
 
 -- | Represents the operational status of a specific flight segment.
 data FlightStatus
@@ -85,7 +102,8 @@ data Booking = Booking
     flightNo :: Text,
     ticketClass :: Text,
     ticketDetails :: TicketDetails,
-    priceCents :: Int
+    priceCents :: Int,
+    bookingStatus :: BookingStatus
   }
   deriving stock (Show, Eq, Generic)
   deriving anyclass (ToJSON, FromJSON)
@@ -99,7 +117,8 @@ instance Disp Booking where
         "Class:" <+> pretty b.ticketClass,
         "Price:" <+> pretty (formatCents b.priceCents),
         "Ticket Type:" <+> pretty (showTicketType b.ticketDetails.ticketType),
-        "Booking Source:" <+> pretty (showBookingSource b.ticketDetails.bookingSource)
+        "Booking Source:" <+> pretty (showBookingSource b.ticketDetails.bookingSource),
+        "Status:" <+> disp b.bookingStatus
       ]
 
 showTicketType :: TicketType -> Text
