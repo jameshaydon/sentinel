@@ -51,6 +51,7 @@ dependencies:
   - recursion-schemes
   - lattices
   - graphviz
+  - time
 
 library:
   source-dirs: src

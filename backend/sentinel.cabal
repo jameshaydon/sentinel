@@ -12,6 +12,7 @@ build-type:     Simple
 
 library
   exposed-modules:
+      Examples.AirCanada
       Lib
       Pre
   other-modules:
@@ -63,6 +64,7 @@ library
     , scientific
     , text
     , text-short
+    , time
     , transformers
   default-language: GHC2024
 
@@ -118,6 +120,7 @@ executable sentinel
     , sentinel
     , text
     , text-short
+    , time
     , transformers
   default-language: GHC2024
 
@@ -176,5 +179,6 @@ test-suite all
     , tasty-hunit
     , text
     , text-short
+    , time
     , transformers
   default-language: GHC2024

@@ -15,4 +15,4 @@ watch-haskell: hpack
 
 [group('build')]
 build: hpack
-  cd sentinel && cabal build -O0
+  cd backend && cabal build -O0
