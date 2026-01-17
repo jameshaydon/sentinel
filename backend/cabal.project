@@ -1,0 +1,5 @@
+packages: sentinel.cabal
+
+package sentinel
+  tests: True
+  test-show-details: direct

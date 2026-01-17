@@ -1,0 +1,13 @@
+cradle:
+  cabal:
+    - path: "src"
+      component: "lib:sentinel"
+
+    - path: "app/Main.hs"
+      component: "sentinel:exe:sentinel"
+
+    - path: "app/Paths_sentinel.hs"
+      component: "sentinel:exe:sentinel"
+
+    - path: "test"
+      component: "sentinel:test:all"

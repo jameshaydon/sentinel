@@ -1,0 +1,99 @@
+name: sentinel
+version: 0.1.0
+author: ['James Henri Haydon']
+maintainer: 'james.haydon@gmail.com'
+
+language: GHC2024
+
+default-extensions:
+  - BlockArguments
+  - DerivingVia
+  - DuplicateRecordFields
+  - FunctionalDependencies
+  - MonoLocalBinds
+  - MultiWayIf
+  - MultilineStrings
+  - NoFieldSelectors
+  - LambdaCase
+  - OverloadedStrings
+  - PatternSynonyms
+  - OverloadedRecordDot
+  - DeriveAnyClass
+  - NoImplicitPrelude
+  - OverloadedLabels
+  - NamedFieldPuns
+  - ViewPatterns
+  - QuantifiedConstraints
+
+dependencies:
+  - base
+  - aeson
+  - containers
+  - mtl
+  - text
+  - transformers
+  - bytestring
+  - filepath
+  - directory
+  - comonad
+  - free
+  - lens
+  - generic-lens
+  - data-default
+  - safe
+  - pretty-simple
+  - prettyprinter
+  - prettyprinter-ansi-terminal
+  - generic-data
+  - text-short
+  - scientific
+  - extra
+  - recursion-schemes
+  - lattices
+  - graphviz
+
+library:
+  source-dirs: src
+
+executables:
+  sentinel:
+    main: Main.hs
+    source-dirs: app
+    ghc-options:
+      - -threaded
+      - -rtsopts
+      - -with-rtsopts=-N
+    dependencies:
+      - sentinel
+
+tests:
+  all:
+    main: Main.hs
+    source-dirs: test
+    dependencies:
+      - sentinel
+      - tasty
+      - tasty-hunit
+
+ghc-options: >-
+  -fwrite-ide-info
+  -hiedir .hie
+  -haddock
+  -fhide-source-paths
+  -Werror
+  -Weverything
+  -Wcompat
+  -Wno-missing-exported-signatures
+  -Wno-missing-kind-signatures
+  -Wno-missing-import-lists
+  -Wno-missed-specialisations
+  -Wno-all-missed-specialisations
+  -Wno-unsafe
+  -Wno-safe
+  -Wno-missing-local-signatures
+  -Wno-monomorphism-restriction
+  -Wno-missing-safe-haskell-mode
+  -Wno-prepositive-qualified-module
+  -Wno-unused-packages
+  -Wno-missing-role-annotations
+  -Wno-missing-poly-kind-signatures

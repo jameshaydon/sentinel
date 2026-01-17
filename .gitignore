@@ -1,0 +1,14 @@
+.DS_Store
+.idea
+*.log
+*.png
+tmp/
+
+.direnv
+
+# nix
+result
+
+# claude
+.claude/
+CLAUDE.md

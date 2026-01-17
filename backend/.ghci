@@ -1,0 +1,5 @@
+-- We turn off this warning to make ghcid work:
+:set -Wno-missing-export-lists
+-- Turn off the setting which promotes warnings to errors temporarily, so that
+-- we can use the repl:
+:set -Wwarn
