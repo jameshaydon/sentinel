@@ -37,12 +37,7 @@ module Pre
     renderDoc,
     renderDocPlain,
     Disp (..),
-    Ann (..),
-    IdKind (..),
-    Severity (..),
-    annId,
-    annEntityType,
-    annField,
+    Ann,
     module Prettyprinter,
     pPrint,
     pTraceShow,
@@ -93,6 +88,8 @@ module Pre
 
     -- * Doc helpers
     quoted,
+    boldText,
+    wrappedText,
   )
 where
 
@@ -136,84 +133,32 @@ import Data.Void
 import Debug.Pretty.Simple (pTraceShow)
 import GHC.Generics (Generic, Generic1)
 import Generic.Data (Generically (..), Generically1 (..))
+import Prettyprinter
+import Prettyprinter.Render.Terminal (AnsiStyle, bold)
+import Prettyprinter.Render.Terminal qualified as Terminal
+import Prettyprinter.Render.Text qualified as Text
 import Safe (headMay)
 import Text.Pretty.Simple (pPrint)
-import Prettyprinter
-import Prettyprinter.Render.Terminal (AnsiStyle)
-import Prettyprinter.Render.Terminal qualified as Term
-import Prettyprinter.Render.Text (renderStrict)
 import Prelude hiding (id, unzip, (.))
 
--- | Semantic annotation type for pretty-printing validation messages.
--- These annotations enable styled output (colors, bold, etc.) in terminals.
-data Ann
-  = -- | An identifier value with its kind
-    AnnId IdKind
-  | -- | An entity type mention (e.g., "Logical Buffer", "Abstract Task")
-    AnnEntityType
-  | -- | A field name mention (e.g., "inputBuffers")
-    AnnField
-  | -- | A severity marker for validation messages
-    AnnSeverity Severity
-  deriving stock (Eq, Show)
+-- | Annotation type for pretty-printing with ANSI styling.
+type Ann = AnsiStyle
 
--- | Severity level for validation issues
--- | 🔰Undefined: Unable to provide further validation (unresolvable references)
--- | ⛔Error: Violation disables the scenario from running properly
--- | ⚠️Warning: Violation may cause issues but not prohibited
-data Severity = Undefined | Error | Warning
-  deriving stock (Eq, Show)
+-- | Layout options with a maximum line width of 140 characters
+layoutOpts :: LayoutOptions
+layoutOpts = LayoutOptions (AvailablePerLine 140 1.0)
 
--- | The kind of identifier, for differentiated styling
-data IdKind
-  = IdLogicalBuffer
-  | IdAbstractTask
-  | IdLogicalResourcePool
-  | IdPhysicalResourcePool
-  | IdAttribute
-  | IdResourceType
-  deriving stock (Eq, Show)
-
--- | Annotate an identifier with its kind
-annId :: IdKind -> Doc Ann -> Doc Ann
-annId = annotate . AnnId
-
--- | Annotate an entity type name
-annEntityType :: Doc Ann -> Doc Ann
-annEntityType = annotate AnnEntityType
-
--- | Annotate a field name
-annField :: Doc Ann -> Doc Ann
-annField = annotate AnnField
-
--- | Convert semantic annotations to ANSI terminal styles
-annToStyle :: Ann -> AnsiStyle
-annToStyle = \case
-  AnnId idKind -> case idKind of
-    IdLogicalBuffer -> Term.color Term.Cyan
-    IdAbstractTask -> Term.color Term.Yellow
-    IdLogicalResourcePool -> Term.color Term.Green
-    IdPhysicalResourcePool -> Term.color Term.Green
-    IdAttribute -> Term.color Term.Magenta
-    IdResourceType -> Term.color Term.Blue
-  AnnEntityType -> Term.bold
-  AnnField -> Term.italicized
-  AnnSeverity sev -> case sev of
-    Undefined -> Term.color Term.Cyan <> Term.bold
-    Error -> Term.color Term.Red <> Term.bold
-    Warning -> Term.color Term.Yellow <> Term.bold
-
--- | Render a Doc with ANSI styling to Text
+-- | Render a Doc to Text with ANSI styling
 renderDoc :: Doc Ann -> Text
-renderDoc = Term.renderStrict . reAnnotateS annToStyle . layoutPretty defaultLayoutOptions
+renderDoc = Terminal.renderStrict . layoutPretty layoutOpts
 
 -- | Render a Doc to plain Text without any styling
 renderDocPlain :: Doc ann -> Text
-renderDocPlain = renderStrict . layoutPretty defaultLayoutOptions
+renderDocPlain = Text.renderStrict . layoutPretty layoutOpts
 
--- | Print a Doc with ANSI styling to stdout, followed by a newline
+-- | Print a Doc to stdout, followed by a newline
 putDocLn :: Doc Ann -> IO ()
-putDocLn doc = Term.putDoc (reAnnotate annToStyle doc) >> putStrLn ""
+putDocLn doc = putStrLn (Text.unpack (renderDoc doc))
 
 putDispLn :: (Disp a) => a -> IO ()
 putDispLn = putDocLn . disp
@@ -222,12 +167,6 @@ putDispLn = putDocLn . disp
 -- characters.
 class Disp a where
   disp :: a -> Doc Ann
-
-instance Disp Severity where
-  disp sev = annotate (AnnSeverity sev) $ case sev of
-    Undefined -> "[UNDEFINED]"
-    Error -> "[ERROR]"
-    Warning -> "[WARNING]"
 
 infixr 0 ??:
 
@@ -286,3 +225,15 @@ instance Unconstrained a
 -- | Wrap a Doc in single quotes for display.
 quoted :: Doc Ann -> Doc Ann
 quoted d = "'" <> d <> "'"
+
+-- | Make text bold
+boldText :: Doc Ann -> Doc Ann
+boldText = annotate bold
+
+-- | Wrap text respecting line breaks and allowing proper text reflow.
+-- Uses fillSep to wrap words within each line, preserving explicit line breaks.
+wrappedText :: Text -> Doc Ann
+wrappedText txt =
+  let textLines = Text.lines txt
+      wrapLine ln = fillSep (pretty <$> Text.words ln)
+   in vsep (wrapLine <$> textLines)

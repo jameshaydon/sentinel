@@ -52,6 +52,14 @@ dependencies:
   - lattices
   - graphviz
   - time
+  - http-conduit
+  - http-client
+  - http-types
+  - random
+  - haskeline
+  - openai
+  - servant-client
+  - vector  
 
 library:
   source-dirs: src

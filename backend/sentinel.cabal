@@ -12,9 +12,14 @@ build-type:     Simple
 
 library
   exposed-modules:
-      Examples.AirCanada
-      Lib
+      Examples.AirCanada.MockDB
+      Examples.AirCanada.Refund
+      Examples.AirCanada.Tools
+      Examples.AirCanada.Types
       Pre
+      Sentinel.Agent
+      Sentinel.Output
+      Sentinel.Tool
   other-modules:
       Paths_sentinel
   hs-source-dirs:
@@ -53,19 +58,27 @@ library
     , generic-data
     , generic-lens
     , graphviz
+    , haskeline
+    , http-client
+    , http-conduit
+    , http-types
     , lattices
     , lens
     , mtl
+    , openai
     , pretty-simple
     , prettyprinter
     , prettyprinter-ansi-terminal
+    , random
     , recursion-schemes
     , safe
     , scientific
+    , servant-client
     , text
     , text-short
     , time
     , transformers
+    , vector
   default-language: GHC2024
 
 executable sentinel
@@ -108,20 +121,28 @@ executable sentinel
     , generic-data
     , generic-lens
     , graphviz
+    , haskeline
+    , http-client
+    , http-conduit
+    , http-types
     , lattices
     , lens
     , mtl
+    , openai
     , pretty-simple
     , prettyprinter
     , prettyprinter-ansi-terminal
+    , random
     , recursion-schemes
     , safe
     , scientific
     , sentinel
+    , servant-client
     , text
     , text-short
     , time
     , transformers
+    , vector
   default-language: GHC2024
 
 test-suite all
@@ -165,20 +186,28 @@ test-suite all
     , generic-data
     , generic-lens
     , graphviz
+    , haskeline
+    , http-client
+    , http-conduit
+    , http-types
     , lattices
     , lens
     , mtl
+    , openai
     , pretty-simple
     , prettyprinter
     , prettyprinter-ansi-terminal
+    , random
     , recursion-schemes
     , safe
     , scientific
     , sentinel
+    , servant-client
     , tasty
     , tasty-hunit
     , text
     , text-short
     , time
     , transformers
+    , vector
   default-language: GHC2024

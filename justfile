@@ -1,3 +1,7 @@
+# Generate all the things
+[group('gen')]
+gen: hpack
+
 # Generate Haskell compiler files
 [group('gen')]
 hpack:

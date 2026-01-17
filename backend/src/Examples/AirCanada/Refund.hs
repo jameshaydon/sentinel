@@ -1,4 +1,4 @@
-module Examples.AirCanada
+module Examples.AirCanada.Refund
   ( TicketType (..),
     BookingSource (..),
     InvoluntaryReason (..),
