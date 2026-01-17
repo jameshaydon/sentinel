@@ -11,13 +11,7 @@ where
 
 import Data.Text qualified as T
 import Data.Time (UTCTime)
-import Examples.AirCanada.Refund
-  ( BookingSource (..),
-    Money (..),
-    TicketFormat (..),
-    TicketType (..),
-    TicketUsage (..),
-  )
+import Examples.AirCanada.Refund qualified as Refund
 import Pre
 
 -- | Format cents as dollars with proper zero-padding.
@@ -85,12 +79,12 @@ instance Disp Flight where
 
 -- | Detailed ticket information for refund processing.
 data TicketDetails = TicketDetails
-  { ticketType :: TicketType,
-    ticketFormat :: TicketFormat,
+  { ticketType :: Refund.TicketType,
+    ticketFormat :: Refund.TicketFormat,
     purchaseTime :: UTCTime,
-    bookingSource :: BookingSource,
-    usage :: TicketUsage,
-    cancellationPenalty :: Money
+    bookingSource :: Refund.BookingSource,
+    usage :: Refund.TicketUsage,
+    cancellationPenalty :: Refund.Money
   }
   deriving stock (Show, Eq, Generic)
   deriving anyclass (ToJSON, FromJSON)
@@ -121,18 +115,18 @@ instance Disp Booking where
         "Status:" <+> disp b.bookingStatus
       ]
 
-showTicketType :: TicketType -> Text
+showTicketType :: Refund.TicketType -> Text
 showTicketType = \case
-  EconomyBasic -> "Economy Basic (Non-refundable)"
-  OtherNonRefundable -> "Non-refundable"
-  Refundable -> "Refundable"
+  Refund.EconomyBasic -> "Economy Basic (Non-refundable)"
+  Refund.OtherNonRefundable -> "Non-refundable"
+  Refund.Refundable -> "Refundable"
 
-showBookingSource :: BookingSource -> Text
+showBookingSource :: Refund.BookingSource -> Text
 showBookingSource = \case
-  DirectAirCanada -> "Air Canada Direct"
-  TravelAgency -> "Travel Agency"
-  OtherAirline -> "Partner Airline"
-  GroupBooking -> "Group Booking"
+  Refund.DirectAirCanada -> "Air Canada Direct"
+  Refund.TravelAgency -> "Travel Agency"
+  Refund.OtherAirline -> "Partner Airline"
+  Refund.GroupBooking -> "Group Booking"
 
 -- | The complete state of our mock airline system.
 data AirlineDB = AirlineDB

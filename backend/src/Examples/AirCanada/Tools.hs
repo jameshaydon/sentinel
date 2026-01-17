@@ -10,30 +10,30 @@ import Examples.AirCanada.MockDB
 import Examples.AirCanada.Refund (DeathCircumstance (..), SpecialException (..))
 import Examples.AirCanada.Types
 import Pre
-import Sentinel.Tool (Tool (..), ToolResult (..), Toolkit (..))
+import Sentinel.Tool qualified as Tool
 
 -- | The retrieve booking tool.
-retrieveBookingTool :: Tool
+retrieveBookingTool :: Tool.Tool
 retrieveBookingTool =
-  Tool
+  Tool.Tool
     { toolName = "RetrieveBooking",
       toolDescription = "Look up booking details by booking reference (PNR). Use this to find passenger name, flight number, ticket class, and refund eligibility.",
       toolParameterDesc = "The 6-character booking reference (e.g., REF123)"
     }
 
 -- | The check flight status tool.
-checkFlightTool :: Tool
+checkFlightTool :: Tool.Tool
 checkFlightTool =
-  Tool
+  Tool.Tool
     { toolName = "CheckFlightStatus",
       toolDescription = "Check if a flight is OnTime, Delayed, Cancelled, Boarding, or Landed. Always retrieve the booking first to get the flight number.",
       toolParameterDesc = "The flight number (e.g., AC101)"
     }
 
 -- | The initiate refund tool.
-processRefundTool :: Tool
+processRefundTool :: Tool.Tool
 processRefundTool =
-  Tool
+  Tool.Tool
     { toolName = "InitiateRefund",
       toolDescription =
         "Process a refund request. Automatically detects involuntary refund eligibility "
@@ -45,15 +45,15 @@ processRefundTool =
     }
 
 -- | The search bookings by passenger name tool.
-searchBookingsTool :: Tool
+searchBookingsTool :: Tool.Tool
 searchBookingsTool =
-  Tool
+  Tool.Tool
     { toolName = "SearchBookingsByName",
       toolDescription = "Search for all bookings associated with a passenger name. Use this when the customer provides their name but not a booking reference.",
       toolParameterDesc = "The passenger's full name"
     }
 
-airlineToolkit :: [Tool]
+airlineToolkit :: [Tool.Tool]
 airlineToolkit =
   [ retrieveBookingTool,
     checkFlightTool,
@@ -90,26 +90,26 @@ parseRefundInput input =
        in (T.toUpper ref, specialReason)
     _ -> (T.toUpper $ T.strip input, Nothing)
 
-executeTool :: Text -> Text -> AirlineDB -> (ToolResult, AirlineDB)
+executeTool :: Text -> Text -> AirlineDB -> (Tool.ToolResult, AirlineDB)
 executeTool toolName input db =
   case T.toLower $ T.strip toolName of
     "retrievebooking" ->
       case getBooking input db of
-        Just booking -> (ToolSuccess $ renderDocPlain (disp booking), db)
-        Nothing -> (ToolError $ "No booking found with reference: " <> input, db)
+        Just booking -> (Tool.ToolSuccess $ renderDocPlain (disp booking), db)
+        Nothing -> (Tool.ToolError $ "No booking found with reference: " <> input, db)
     "checkflightstatus" ->
       case getFlight input db of
-        Just flight -> (ToolSuccess $ renderDocPlain (disp flight), db)
-        Nothing -> (ToolError $ "No flight found with number: " <> input, db)
+        Just flight -> (Tool.ToolSuccess $ renderDocPlain (disp flight), db)
+        Nothing -> (Tool.ToolError $ "No flight found with number: " <> input, db)
     "initiaterefund" ->
       let (ref, specialReason) = parseRefundInput input
           (result, updatedDB) = attemptRefund ref specialReason db
-       in (ToolSuccess result, updatedDB)
+       in (Tool.ToolSuccess result, updatedDB)
     "searchbookingsbyname" ->
       case listBookingsForPassenger input db of
-        [] -> (ToolError $ "No bookings found for passenger: " <> input, db)
+        [] -> (Tool.ToolError $ "No bookings found for passenger: " <> input, db)
         bookings ->
-          ( ToolSuccess
+          ( Tool.ToolSuccess
               $ renderDocPlain
               $ vsep
                 [ "Found" <+> pretty (length bookings) <+> "booking(s):",
@@ -119,11 +119,11 @@ executeTool toolName input db =
             db
           )
     _ ->
-      (ToolError $ "Unknown tool: " <> toolName, db)
+      (Tool.ToolError $ "Unknown tool: " <> toolName, db)
 
-airCanadaToolkit :: Toolkit AirlineDB
+airCanadaToolkit :: Tool.Toolkit AirlineDB
 airCanadaToolkit =
-  Toolkit
+  Tool.Toolkit
     { tools = airlineToolkit,
       executeTool = executeTool,
       systemPrompt = systemPrompt

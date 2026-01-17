@@ -1,3 +1,4 @@
+-- | Display formatting
 module Sentinel.Output
   ( -- * Output Types
     Thinking (..),
@@ -19,8 +20,8 @@ data Thinking = Thinking {thought :: Text}
 
 instance Disp Thinking where
   disp (Thinking thought) =
-    nest 4 $
-      vsep
+    nest 4
+      $ vsep
         [ "",
           subheader "## Thinking",
           "",
@@ -33,8 +34,8 @@ data FinalAnswer = FinalAnswer {answer :: Text}
 
 instance Disp FinalAnswer where
   disp (FinalAnswer answer) =
-    nest 4 $
-      vsep
+    nest 4
+      $ vsep
         [ "",
           subheader "## Final Answer",
           "",
@@ -50,8 +51,8 @@ data ToolUse = ToolUse
 
 instance Disp ToolUse where
   disp (ToolUse tool input) =
-    nest 4 $
-      vsep
+    nest 4
+      $ vsep
         [ "",
           subheader "## Tool Use",
           "",
@@ -65,8 +66,8 @@ data Observation = Observation {result :: Text}
 
 instance Disp Observation where
   disp (Observation result) =
-    nest 4 $
-      vsep
+    nest 4
+      $ vsep
         [ "",
           subheader "## Observation",
           "",
@@ -79,8 +80,8 @@ data Response = Response {message :: Text}
 
 instance Disp Response where
   disp (Response resp) =
-    nest 4 $
-      vsep
+    nest 4
+      $ vsep
         [ "",
           subheader "## Response",
           "",
@@ -93,8 +94,8 @@ data Error = Error {errorMessage :: Text}
 
 instance Disp Error where
   disp (Error err) =
-    nest 4 $
-      vsep
+    nest 4
+      $ vsep
         [ "",
           errorText "## Error",
           "",
@@ -107,8 +108,8 @@ data Iteration = Iteration {iterationNumber :: Int}
 
 instance Disp Iteration where
   disp (Iteration n) =
-    nest 2 $
-      vsep
+    nest 2
+      $ vsep
         [ "",
           header "# Iteration" <+> iterationNum (pretty n)
         ]

@@ -30,8 +30,8 @@ import OpenAI.V1.Models (Model)
 import OpenAI.V1.Tool qualified as OpenAI
 import OpenAI.V1.ToolCall qualified as ToolCall
 import Pre
-import Sentinel.Output
-import Sentinel.Tool
+import Sentinel.Output qualified as Output
+import Sentinel.Tool qualified as Tool
 import Servant.Client (ClientEnv)
 
 --------------------------------------------------------------------------------
@@ -89,7 +89,7 @@ defaultConfig key = do
 
 data AgentEnv db = AgentEnv
   { config :: AgentConfig,
-    toolkit :: Toolkit db
+    toolkit :: Tool.Toolkit db
   }
 
 data AgentState db = AgentState
@@ -207,19 +207,19 @@ processToolCall (ToolCall.ToolCall_Function {id = callId, function = fn}) = do
       argsJson = fn.arguments
       mInput = extractToolInput argsJson
 
-  liftIO $ putDispLn (ToolUse toolName (fromMaybe argsJson mInput))
+  liftIO $ putDispLn (Output.ToolUse toolName (fromMaybe argsJson mInput))
 
   let (result, newDb) = case mInput of
-        Nothing -> (ToolError $ "Failed to parse arguments: " <> argsJson, st.db)
+        Nothing -> (Tool.ToolError $ "Failed to parse arguments: " <> argsJson, st.db)
         Just input -> env.toolkit.executeTool toolName input st.db
 
       observation = case result of
-        ToolSuccess txt -> txt
-        ToolError err -> "ERROR: " <> err
+        Tool.ToolSuccess txt -> txt
+        Tool.ToolError err -> "ERROR: " <> err
 
   modify \s -> s {db = newDb}
 
-  liftIO $ putDispLn (Observation observation)
+  liftIO $ putDispLn (Output.Observation observation)
 
   pure $ ToolMsg callId observation
 
@@ -228,7 +228,7 @@ processToolCall (ToolCall.ToolCall_Function {id = callId, function = fn}) = do
 --------------------------------------------------------------------------------
 
 -- | Create initial messages with the system prompt from the toolkit.
-initialMessages :: Toolkit db -> [Message]
+initialMessages :: Tool.Toolkit db -> [Message]
 initialMessages toolkit = [SystemMsg toolkit.systemPrompt]
 
 -- | Run the agent with a user query.
@@ -237,9 +237,9 @@ initialMessages toolkit = [SystemMsg toolkit.systemPrompt]
 -- This will /loop/, executing tool calls, etc. It terminates when the LLM
 -- returns a "final response" message (i.e. no tool calls). (Or if the maximum
 -- number of iterations is reached.)
-runAgent :: AgentConfig -> Toolkit db -> db -> [Message] -> Text -> IO (Text, db, [Message])
+runAgent :: AgentConfig -> Tool.Toolkit db -> db -> [Message] -> Text -> IO (Text, db, [Message])
 runAgent config toolkit db history userQuery = do
-  putDispLn (AgentStart userQuery)
+  putDispLn (Output.AgentStart userQuery)
   let env = AgentEnv {config, toolkit}
       initialState = AgentState {db, messages = history <> [UserMsg userQuery]}
   (response, finalState) <- runAgentM env initialState agentLoop
@@ -256,12 +256,12 @@ agentLoop = do
       modify \s -> s {messages = s.messages <> [AssistantMsg (Just response) Nothing]}
       pure response
     else do
-      liftIO $ putDispLn (Iteration iteration)
-      let openAITools = toOpenAITool <$> env.toolkit.tools
+      liftIO $ putDispLn (Output.Iteration iteration)
+      let openAITools = Tool.toOpenAITool <$> env.toolkit.tools
       result <- callLLM openAITools
       case result of
         Left err -> do
-          liftIO $ putDispLn (Error err)
+          liftIO $ putDispLn (Output.Error err)
           let response = "I encountered an error: " <> err
           modify \s -> s {messages = s.messages <> [AssistantMsg (Just response) Nothing]}
           pure response
@@ -289,7 +289,7 @@ handleResponse msg = case msg of
       _ -> do
         -- No tool calls - this is the final response
         let response = fromMaybe "" assistant_content
-        liftIO $ putDispLn (FinalAnswer response)
+        liftIO $ putDispLn (Output.FinalAnswer response)
         modify \s -> s {messages = s.messages <> [AssistantMsg (Just response) Nothing]}
         pure response
   _ -> do
