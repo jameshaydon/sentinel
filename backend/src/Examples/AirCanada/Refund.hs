@@ -31,7 +31,8 @@ data TicketType
   = EconomyBasic
   | OtherNonRefundable
   | Refundable
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (ToJSON, FromJSON)
 
 -- | Where the ticket was purchased
 data BookingSource
@@ -39,7 +40,8 @@ data BookingSource
   | TravelAgency
   | OtherAirline
   | GroupBooking
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (ToJSON, FromJSON)
 
 -- | Reasons for involuntary refund (Air Canada's fault)
 data InvoluntaryReason
@@ -68,7 +70,8 @@ data DeathCircumstance
 data TicketFormat
   = Electronic
   | Paper
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (ToJSON, FromJSON)
 
 -- | Usage status of a ticket
 data TicketUsage
@@ -76,11 +79,13 @@ data TicketUsage
   | -- | Value of flown segments
     PartiallyUsed Money
   | FullyUsed
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (ToJSON, FromJSON)
 
 -- | Money amount in cents to avoid floating point issues
 newtype Money = Money {cents :: Int}
-  deriving stock (Eq, Show, Ord)
+  deriving stock (Eq, Show, Ord, Generic)
+  deriving anyclass (ToJSON, FromJSON)
 
 instance Semigroup Money where
   Money a <> Money b = Money (a + b)

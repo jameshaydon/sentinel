@@ -5,14 +5,21 @@ module Examples.AirCanada.MockDB
     getFlightStatus,
     attemptRefund,
     listBookingsForPassenger,
+    currentTime,
   )
 where
 
 import Data.Map.Strict qualified as M
 import Data.Text qualified as T
 import Data.Time
+import Examples.AirCanada.Refund
 import Examples.AirCanada.Types
 import Pre
+
+-- | Fixed "current time" for deterministic mock behavior.
+-- This is set to January 19, 2025 at 10:00 UTC (day before flights).
+currentTime :: UTCTime
+currentTime = UTCTime (fromGregorian 2025 1 19) (10 * 3600)
 
 -- | Initialize the mock database with sample data.
 initialDB :: AirlineDB
@@ -77,44 +84,84 @@ initialDB =
           status = Boarding
         }
 
-    -- Sample bookings
+    -- Purchase time: 3 days before baseTime
+    purchaseTime = addUTCTime (-3 * 24 * 3600) baseTime
+
+    -- Sample bookings with rich ticket details
+
+    -- REF123: Refundable Business, flight OnTime → voluntary refund with penalty
     booking1 =
       Booking
         { bookingRef = "REF123",
           passengerName = "Alice Smith",
           flightNo = "AC101",
           ticketClass = "Business",
-          isRefundable = True,
+          ticketDetails =
+            TicketDetails
+              { ticketType = Refundable,
+                ticketFormat = Electronic,
+                purchaseTime = purchaseTime,
+                bookingSource = DirectAirCanada,
+                usage = Unused,
+                cancellationPenalty = Money 25000
+              },
           priceCents = 250000
         }
 
+    -- REF456: EconomyBasic, flight Delayed → involuntary (full refund)
     booking2 =
       Booking
         { bookingRef = "REF456",
           passengerName = "Bob Jones",
           flightNo = "AC102",
           ticketClass = "Economy",
-          isRefundable = False,
+          ticketDetails =
+            TicketDetails
+              { ticketType = EconomyBasic,
+                ticketFormat = Electronic,
+                purchaseTime = purchaseTime,
+                bookingSource = DirectAirCanada,
+                usage = Unused,
+                cancellationPenalty = Money 0
+              },
           priceCents = 45000
         }
 
+    -- REF789: OtherNonRefundable, flight Cancelled → full involuntary refund
     booking3 =
       Booking
         { bookingRef = "REF789",
           passengerName = "Carol White",
           flightNo = "AC103",
           ticketClass = "Economy",
-          isRefundable = True,
+          ticketDetails =
+            TicketDetails
+              { ticketType = OtherNonRefundable,
+                ticketFormat = Electronic,
+                purchaseTime = purchaseTime,
+                bookingSource = DirectAirCanada,
+                usage = Unused,
+                cancellationPenalty = Money 0
+              },
           priceCents = 85000
         }
 
+    -- REF111: TravelAgency booking → must contact agency
     booking4 =
       Booking
         { bookingRef = "REF111",
           passengerName = "Alice Smith",
           flightNo = "AC104",
           ticketClass = "Economy",
-          isRefundable = False,
+          ticketDetails =
+            TicketDetails
+              { ticketType = OtherNonRefundable,
+                ticketFormat = Electronic,
+                purchaseTime = purchaseTime,
+                bookingSource = TravelAgency,
+                usage = Unused,
+                cancellationPenalty = Money 0
+              },
           priceCents = 35000
         }
 
@@ -138,25 +185,96 @@ listBookingsForPassenger name db =
     normalizedName = T.toLower $ T.strip name
     matchesName b = T.toLower b.passengerName == normalizedName
 
+-- | Infer refund reason from flight status.
+inferRefundReason :: FlightStatus -> Maybe SpecialException -> RefundReason
+inferRefundReason flightStatus specialReason =
+  case specialReason of
+    Just exc -> SpecialCase exc
+    Nothing -> case flightStatus of
+      Cancelled -> Involuntary FlightCancelled
+      Delayed -> Involuntary FlightDelayed
+      _ -> Voluntary
+
+-- | Build a Ticket from booking data.
+bookingToTicket :: Booking -> Ticket
+bookingToTicket b =
+  Ticket
+    { ticketType = b.ticketDetails.ticketType,
+      ticketFormat = b.ticketDetails.ticketFormat,
+      pricePaid = Money b.priceCents,
+      purchaseTime = b.ticketDetails.purchaseTime,
+      bookingSource = b.ticketDetails.bookingSource,
+      usage = b.ticketDetails.usage,
+      cancellationPenalty = b.ticketDetails.cancellationPenalty
+    }
+
+-- | Format a RefundOutcome as user-friendly text.
+formatOutcome :: Text -> RefundOutcome -> Text
+formatOutcome bookingRef outcome = case outcome of
+  FullRefund (Money amt) ->
+    "Success: Full refund of "
+      <> formatCents amt
+      <> " approved for booking "
+      <> bookingRef
+      <> ". Amount will be credited to the original payment method within 5-7 business days."
+  PartialRefund (Money amt) ->
+    "Success: Partial refund of "
+      <> formatCents amt
+      <> " approved for booking "
+      <> bookingRef
+      <> " (cancellation penalty applied). "
+      <> "Amount will be credited to the original payment method within 5-7 business days."
+  TravelCredit (Money amt) ->
+    "Your booking "
+      <> bookingRef
+      <> " is eligible for a travel credit of "
+      <> formatCents amt
+      <> " valid for 12 months. "
+      <> "This credit can be used for future Air Canada bookings."
+  ACWalletFunds (Money amt) ->
+    "Your booking "
+      <> bookingRef
+      <> " qualifies for "
+      <> formatCents amt
+      <> " in AC Wallet funds."
+  NoRefund ->
+    "Unfortunately, booking "
+      <> bookingRef
+      <> " is not eligible for a refund. "
+      <> "Economy Basic tickets are non-refundable and do not qualify for travel credits."
+  ContactAgency src ->
+    "Booking "
+      <> bookingRef
+      <> " was purchased through a "
+      <> (case src of TravelAgency -> "travel agency"; OtherAirline -> "partner airline"; _ -> "third party")
+      <> ". Please contact them directly to process your refund request."
+  RefundPlusFreeReturn (Money amt) ->
+    "Success: Full refund of "
+      <> formatCents amt
+      <> " approved for booking "
+      <> bookingRef
+      <> ", plus a free return flight if you are currently away from home. "
+      <> "Amount will be credited within 5-7 business days."
+
 -- | Attempt to process a refund for a booking.
-attemptRefund :: Text -> AirlineDB -> Text
-attemptRefund ref db =
+-- Accepts an optional special reason (jury, military, death).
+attemptRefund :: Text -> Maybe SpecialException -> AirlineDB -> Text
+attemptRefund ref specialReason db =
   case getBooking ref db of
     Nothing -> "Error: Booking reference '" <> ref <> "' not found."
     Just booking ->
-      if booking.isRefundable
-        then
-          "Success: Refund of "
-            <> formatCents booking.priceCents
-            <> " processed for booking "
-            <> booking.bookingRef
-            <> ". Amount will be credited to the original payment method within 5-7 business days."
-        else
-          "Failure: Booking "
-            <> booking.bookingRef
-            <> " is marked as Non-Refundable. "
-            <> "However, since flight "
-            <> booking.flightNo
-            <> " may be affected by operational issues, "
-            <> "you may be eligible for a travel credit or rebooking. "
-            <> "Please contact customer service for assistance."
+      case getFlight booking.flightNo db of
+        Nothing -> "Error: Flight " <> booking.flightNo <> " not found in system."
+        Just flight ->
+          let reason = inferRefundReason flight.status specialReason
+              ticket = bookingToTicket booking
+              request =
+                RefundRequest
+                  { ticket = ticket,
+                    reason = reason,
+                    requestTime = currentTime,
+                    tripNowPointless = flight.status == Cancelled,
+                    hasDocumentation = isJust specialReason -- assume docs provided if special reason given
+                  }
+              outcome = calculateRefund request
+           in formatOutcome booking.bookingRef outcome

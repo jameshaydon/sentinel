@@ -5,7 +5,7 @@ import Data.Text qualified as T
 import Examples.AirCanada.MockDB (initialDB)
 import Examples.AirCanada.Tools (airCanadaToolkit)
 import Examples.AirCanada.Types (AirlineDB)
-import Sentinel.Agent (AgentConfig, Message, defaultConfig, initialMessages, runAgent)
+import Sentinel.Agent (AgentConfig (..), Message, defaultConfig, initialMessages, runAgent)
 import Sentinel.Tool (Toolkit)
 import Pre (Ann, Doc, putDocLn, renderDocPlain, vsep, wrappedText)
 import System.Console.Haskeline (InputT, defaultSettings, getInputLine, outputStrLn, runInputT)
@@ -25,10 +25,11 @@ bannerDoc =
     ]
 
 -- | Ready message with sample queries
-readyDoc :: Doc Ann
-readyDoc =
+readyDoc :: T.Text -> Doc Ann
+readyDoc modelName =
   vsep
     [ "System Ready!",
+      wrappedText ("Model: " <> modelName),
       "",
       "Sample queries you can try:",
       "  - \"What's the status of my booking REF123?\"",
@@ -78,7 +79,8 @@ main = do
       let toolkit = airCanadaToolkit
           db = initialDB
 
-      putDocLn readyDoc
+      let modelName = case config of AgentConfig {model} -> T.pack (show model)
+      putDocLn (readyDoc modelName)
 
       repl config toolkit db (initialMessages toolkit)
 

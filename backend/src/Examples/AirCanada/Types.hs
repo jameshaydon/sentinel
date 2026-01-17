@@ -2,6 +2,7 @@ module Examples.AirCanada.Types
   ( FlightStatus (..),
     Flight (..),
     Booking (..),
+    TicketDetails (..),
     AirlineDB (..),
     formatCents,
   )
@@ -9,6 +10,13 @@ where
 
 import Data.Text qualified as T
 import Data.Time (UTCTime)
+import Examples.AirCanada.Refund
+  ( BookingSource (..),
+    Money (..),
+    TicketFormat (..),
+    TicketType (..),
+    TicketUsage (..),
+  )
 import Pre
 
 -- | Format cents as dollars with proper zero-padding.
@@ -58,13 +66,25 @@ instance Disp Flight where
         "Status:" <+> disp f.status
       ]
 
+-- | Detailed ticket information for refund processing.
+data TicketDetails = TicketDetails
+  { ticketType :: TicketType,
+    ticketFormat :: TicketFormat,
+    purchaseTime :: UTCTime,
+    bookingSource :: BookingSource,
+    usage :: TicketUsage,
+    cancellationPenalty :: Money
+  }
+  deriving stock (Show, Eq, Generic)
+  deriving anyclass (ToJSON, FromJSON)
+
 -- | Represents a passenger's reservation.
 data Booking = Booking
   { bookingRef :: Text,
     passengerName :: Text,
     flightNo :: Text,
     ticketClass :: Text,
-    isRefundable :: Bool,
+    ticketDetails :: TicketDetails,
     priceCents :: Int
   }
   deriving stock (Show, Eq, Generic)
@@ -78,8 +98,22 @@ instance Disp Booking where
         "Flight:" <+> pretty b.flightNo,
         "Class:" <+> pretty b.ticketClass,
         "Price:" <+> pretty (formatCents b.priceCents),
-        "Refundable:" <+> if b.isRefundable then "Yes" else "No"
+        "Ticket Type:" <+> pretty (showTicketType b.ticketDetails.ticketType),
+        "Booking Source:" <+> pretty (showBookingSource b.ticketDetails.bookingSource)
       ]
+
+showTicketType :: TicketType -> Text
+showTicketType = \case
+  EconomyBasic -> "Economy Basic (Non-refundable)"
+  OtherNonRefundable -> "Non-refundable"
+  Refundable -> "Refundable"
+
+showBookingSource :: BookingSource -> Text
+showBookingSource = \case
+  DirectAirCanada -> "Air Canada Direct"
+  TravelAgency -> "Travel Agency"
+  OtherAirline -> "Partner Airline"
+  GroupBooking -> "Group Booking"
 
 -- | The complete state of our mock airline system.
 data AirlineDB = AirlineDB

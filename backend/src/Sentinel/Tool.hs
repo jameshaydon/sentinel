@@ -2,10 +2,13 @@ module Sentinel.Tool
   ( Tool (..),
     ToolResult (..),
     Toolkit (..),
-    toolsDescription,
+    toOpenAITool,
   )
 where
 
+import Data.Aeson qualified as Aeson
+import Data.Aeson.KeyMap qualified as KeyMap
+import OpenAI.V1.Tool qualified as OpenAI
 import Pre
 
 -- | A tool that the agent can use.
@@ -16,13 +19,37 @@ data Tool = Tool
   }
   deriving stock (Show, Eq)
 
-instance Disp Tool where
-  disp t =
-    vsep
-      [ "Tool:" <+> pretty t.toolName,
-        "Description:" <+> pretty t.toolDescription,
-        "Parameter:" <+> pretty t.toolParameterDesc
-      ]
+-- | Convert a Tool to OpenAI's Tool_Function format.
+toOpenAITool :: Tool -> OpenAI.Tool
+toOpenAITool tool =
+  OpenAI.Tool_Function
+    { function =
+        OpenAI.Function
+          { name = tool.toolName,
+            description = Just tool.toolDescription,
+            parameters =
+              Just
+                $ Aeson.Object
+                $ KeyMap.fromList
+                  [ ("type", "object"),
+                    ( "properties",
+                      Aeson.Object
+                        $ KeyMap.fromList
+                          [ ( "input",
+                              Aeson.Object
+                                $ KeyMap.fromList
+                                  [ ("type", "string"),
+                                    ("description", Aeson.String tool.toolParameterDesc)
+                                  ]
+                            )
+                          ]
+                    ),
+                    ("required", Aeson.Array $ pure "input"),
+                    ("additionalProperties", Aeson.Bool False)
+                  ],
+            strict = Just True
+          }
+    }
 
 -- | Result of executing a tool.
 data ToolResult
@@ -39,13 +66,7 @@ instance Disp ToolResult where
 -- Parameterized by the database/state type that tools operate on.
 data Toolkit db = Toolkit
   { tools :: [Tool],
+    -- Execute a tool. First arg is the tool name. Second is the tool input.
     executeTool :: Text -> Text -> db -> ToolResult,
     systemPrompt :: Text
   }
-
--- | Generate a description of tools for the system prompt.
-toolsDescription :: [Tool] -> Text
-toolsDescription ts =
-  renderDocPlain
-    $ vsep
-    $ punctuate line (fmap disp ts)
