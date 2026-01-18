@@ -187,19 +187,81 @@ Tool returns:
 }
 ```
 
-LLM reasoning: User said "New York" -> matches BK-2847 (LHR->JFK)
-
-Context binding: `booking_of_interest <- "BK-2847"`
-
-Note: If multiple bookings matched "New York", or the description was ambiguous, the LLM would ask the user to clarify.
+LLM reasoning: User said "New York" -> likely matches BK-2847 (LHR->JFK). Will attempt to query eligibility.
 
 #### LLM AGENT: Formulates symbolic query
 
 Query: `eligible_for_refund(booking_of_interest, RefundType, Reason)`
 
-Note: Purely symbolic - no literals like "BK-2847" or "$892". The context slot `booking_of_interest` resolves to BK-2847.
+Note: Purely symbolic - no literals like "BK-2847" or "$892".
 
-#### SOLVER: Proof attempt #1
+#### SOLVER: Proof attempt #1 - BLOCKED on missing context
+
+**Goal**: `eligible_for_refund(booking_of_interest, RefundType, Reason)`
+
+**SOLVER RESULT**:
+```
+Blocked {
+  missing_context: ["booking_of_interest"],
+  reason: "Context slot 'booking_of_interest' is unbound",
+  askable: true,
+  candidates: [
+    {"booking_id": "BK-2847", "description": "LHR→JFK (New York), Jan 15"},
+    {"booking_id": "BK-3012", "description": "LHR→CDG (Paris), Feb 20"}
+  ]
+}
+```
+
+#### LLM AGENT: Requests context establishment
+
+The solver indicates `booking_of_interest` must be explicitly established. The LLM issues a context establishment request:
+
+**CONTEXT REQUEST**: `establish_context(booking_of_interest)`
+```json
+{
+  "context_slot": "booking_of_interest",
+  "question": "Which booking would you like to request a refund for?",
+  "options": [
+    {"value": "BK-2847", "label": "Flight to New York (LHR→JFK) - Jan 15, 2025"},
+    {"value": "BK-3012", "label": "Flight to Paris (LHR→CDG) - Feb 20, 2025"}
+  ],
+  "suggested": "BK-2847"
+}
+```
+
+#### UI: Context Selection Form
+
+A mini-form appears in the chat:
+
+```
+┌─────────────────────────────────────────────────────┐
+│ Which booking would you like to request a refund for? │
+│                                                       │
+│  ◉ Flight to New York (LHR→JFK) - Jan 15, 2025       │
+│  ○ Flight to Paris (LHR→CDG) - Feb 20, 2025          │
+│                                                       │
+│                              [Confirm]                │
+└─────────────────────────────────────────────────────┘
+```
+
+#### USER: Confirms selection
+
+Sarah clicks "Confirm" with the pre-selected New York flight.
+
+#### SYSTEM: Context established
+
+```
+context_store.establish(
+  booking_of_interest,
+  "BK-2847",
+  established_via: "user_selection",
+  timestamp: "2025-01-15T14:30:15Z"
+)
+```
+
+Context binding: `booking_of_interest <- "BK-2847"` (user-confirmed)
+
+#### SOLVER: Proof attempt #2 - Context now available
 
 **Goal**: `eligible_for_refund(BK-2847, RefundType, Reason)`
 
@@ -389,9 +451,11 @@ refund_decision:
 
   context_establishment:
     booking_of_interest:
-      established_via: "LLM matched user description 'flight to New York' to booking"
+      established_via: "user_selection"
       tool_call: get_user_bookings(usr_sarah_chen) @ 14:30:01
-      matched: "BK-2847 (LHR->JFK, destination: New York)"
+      candidates_presented: ["BK-2847 (LHR->JFK)", "BK-3012 (LHR->CDG)"]
+      user_selected: "BK-2847"
+      timestamp: "2025-01-15T14:30:15Z"
 
   tool_calls_made:
     - get_user_bookings(usr_sarah_chen) @ 14:30:01
@@ -447,17 +511,78 @@ Tool returns:
 }
 ```
 
-LLM reasoning: User said "tomorrow" (Jan 16) -> matches BK-5521. User has only one booking, so no ambiguity.
-
-Context binding: `booking_of_interest <- "BK-5521"`
+LLM reasoning: User said "tomorrow" (Jan 16) -> likely matches BK-5521. Will attempt to query eligibility.
 
 #### LLM AGENT: Formulates symbolic query
 
 Query: `eligible_for_refund(booking_of_interest, RefundType, Reason)`
 
-Note: The context slot `booking_of_interest` resolves to BK-5521
+Note: Purely symbolic - context slot `booking_of_interest` is not yet bound.
 
-#### SOLVER: Proof attempt
+#### SOLVER: Proof attempt #1 - BLOCKED on missing context
+
+**Goal**: `eligible_for_refund(booking_of_interest, RefundType, Reason)`
+
+**SOLVER RESULT**:
+```
+Blocked {
+  missing_context: ["booking_of_interest"],
+  reason: "Context slot 'booking_of_interest' is unbound",
+  askable: true,
+  candidates: [
+    {"booking_id": "BK-5521", "description": "ORD→LAX (Los Angeles), Jan 16"}
+  ]
+}
+```
+
+#### LLM AGENT: Requests context establishment
+
+Even with only one booking, the context must be explicitly established:
+
+**CONTEXT REQUEST**: `establish_context(booking_of_interest)`
+```json
+{
+  "context_slot": "booking_of_interest",
+  "question": "Please confirm the booking you'd like to cancel:",
+  "options": [
+    {"value": "BK-5521", "label": "Flight to Los Angeles (ORD→LAX) - Jan 16, 2025"}
+  ],
+  "suggested": "BK-5521"
+}
+```
+
+#### UI: Context Selection Form
+
+A mini-form appears in the chat (single option, but still requires confirmation):
+
+```
+┌─────────────────────────────────────────────────────┐
+│ Please confirm the booking you'd like to cancel:     │
+│                                                       │
+│  ◉ Flight to Los Angeles (ORD→LAX) - Jan 16, 2025   │
+│                                                       │
+│                              [Confirm]                │
+└─────────────────────────────────────────────────────┘
+```
+
+#### USER: Confirms selection
+
+Marcus clicks "Confirm".
+
+#### SYSTEM: Context established
+
+```
+context_store.establish(
+  booking_of_interest,
+  "BK-5521",
+  established_via: "user_selection",
+  timestamp: "2025-01-15T16:00:10Z"
+)
+```
+
+Context binding: `booking_of_interest <- "BK-5521"` (user-confirmed)
+
+#### SOLVER: Proof attempt #2 - Context now available
 
 **Goal**: `eligible_for_refund(BK-5521, RefundType, Reason)`
 
@@ -681,9 +806,12 @@ refund_decision:
 
   context_establishment:
     booking_of_interest:
-      established_via: "LLM matched user description 'flight tomorrow' to booking"
+      established_via: "user_selection"
       tool_call: get_user_bookings(usr_marcus_webb) @ 16:00:01
-      matched: "BK-5521 (only booking, departing 2025-01-16)"
+      candidates_presented: ["BK-5521 (ORD->LAX)"]
+      user_selected: "BK-5521"
+      timestamp: "2025-01-15T16:00:10Z"
+      note: "Single candidate still required user confirmation"
 
   tool_calls_made:
     - get_user_bookings(usr_marcus_webb) @ 16:00:01
@@ -696,9 +824,14 @@ refund_decision:
 
 ## What This Demo Showcases
 
-- **Context established via conversation**
-  - Scenario A: "flight to New York" -> BK-2847
-  - Scenario B: "flight tomorrow" -> BK-5521
+- **Explicit context establishment via user confirmation**
+  - Context slots (like `booking_of_interest`) cannot be implicitly bound by the LLM
+  - Solver returns `Blocked` with `missing_context` when unbound
+  - LLM must issue `establish_context` request with options
+  - UI presents a mini-form for user selection/confirmation
+  - Even single-candidate contexts require explicit user confirmation
+  - Scenario A: User selects from 2 bookings via form
+  - Scenario B: User confirms single booking via form
 
 - **Multi-layer guard checking**
   - Scenario A: Refund guard triggers approval check
