@@ -32,6 +32,8 @@
 
 - *Guard Violation*: When a tool call attempt fails precondition check. Example: trying to refund a booking for a non-cancelled flight.
 
+- *Hypothetical Query*: A query where the LLM temporarily assumes certain facts hold, to explore what would follow. Used for verified user feedback ("if you provide X, you'd be eligible for Y") without actually establishing facts or unblocking tool usage.
+
 ## Overview
 
 The system acts as a **governance middleware** that sits between an LLM agent
@@ -91,6 +93,7 @@ A **stateless backtracking/concurrent solver** that proves goals against rulebas
 
 - Stateless across invocations: returns complete result, no continuation preserved between turns.
 - Fast (apart from tool I/O): re-running is cheap
+- Supports hypothetical queries: LLM can ask "what if these askable facts were true?" The solver treats hypotheticals as temporarily established for the query only. This allows the LLM to give verified conditional feedback to users ("if you provide documentation, you'd qualify for X") without making unverified claims. Hypothetical facts do not persist in the fact store and do not satisfy guards for actual tool execution.
 
 ### Guard Evaluator
 

@@ -14,7 +14,6 @@ AirLogic Airlines has a complex refund policy with multiple paths to eligibility
 6. **EU261 Override**: Full refund regardless of fare class if flight departs from EU and delay > 5 hours
 
 **Additional Guards:**
-- Refunds over $500 require supervisor approval
 - Any refund requires user to confirm they understand ticket becomes invalid
 - Vouchers require user to accept T&C for voucher program
 
@@ -55,10 +54,15 @@ hours_until_departure(B, Hours) :-
     call(get_time_to_departure, {flight_id: F}) ~> $.hours -> Hours.
 
 is_eu_airport(Airport) :-
-    call(get_airport_info, {code: Airport}) ~> $.is_eu -> true.
+    call(get_airport_info, {code: Airport}) ~> $.is_eu.
 
-has_supervisor_approval(B) :-
-    call(check_approval_queue, {booking_id: B, type: "refund"}) ~> $.approved -> true.
+rebooking_fee(B, Fee) :-
+    booking_fare_class(B, FareClass),
+    call(get_rebooking_policy, {fare_class: FareClass}) ~> $.change_fee -> Fee.
+
+rebooking_allowed(B) :-
+    booking_fare_class(B, FareClass),
+    call(get_rebooking_policy, {fare_class: FareClass}) ~> $.rebooking_allowed.
 
 %% === ASKABLE PREDICATES ===
 % These can be established by asking the user
@@ -134,10 +138,9 @@ eligible_for_refund(B, voucher, "medical_basic") :-
 
 %% === GUARDS ===
 
-guard(issue_refund(B, Amount)) :-
-    eligible_for_refund(B, _, _),
-    user_confirms_cancellation_understanding(current_user),
-    (Amount < 500 ; has_supervisor_approval(B)).
+guard(issue_full_refund(B)) :-
+    eligible_for_refund(B, full, _),
+    user_confirms_cancellation_understanding(current_user).
 
 guard(issue_voucher(B)) :-
     eligible_for_refund(B, voucher, _),
@@ -300,63 +303,46 @@ Also checking `eu261_eligible` for additional grounds:
 
 **SOLVER RESULT**:
 ```
-Success {
-  bindings: {RefundType: full, Reason: "airline_fault"},
-  alternative_bindings: [{RefundType: full, Reason: "eu261"}],
-  trace: <proof tree>
-}
+Success [
+  {bindings: {RefundType: full, Reason: "airline_fault"}, trace: <proof tree>},
+  {bindings: {RefundType: full, Reason: "eu261"}, trace: <proof tree>}
+]
 ```
 
 #### LLM AGENT: Attempts to issue refund
 
-Tool call: `issue_refund(booking_of_interest, booking_amount_of_interest)`
+Tool call: `issue_full_refund(booking_of_interest)`
 
-Resolved: `issue_refund("BK-2847", 892)`
+Resolved: `issue_full_refund("BK-2847")`
 
-#### GUARD EVALUATOR: Checking issue_refund guard
+#### GUARD EVALUATOR: Checking issue_full_refund guard
 
 Guard:
 ```prolog
-eligible_for_refund(B, _, _),
-user_confirms_cancellation_understanding(current_user),
-(Amount < 500 ; has_supervisor_approval(B))
+eligible_for_refund(B, full, _),
+user_confirms_cancellation_understanding(current_user)
 ```
 
-- Check 1: `eligible_for_refund(BK-2847, _, _)` -> Already proven in fact store
+- Check 1: `eligible_for_refund(BK-2847, full, _)` -> Already proven in fact store
 - Check 2: `user_confirms_cancellation_understanding(current_user)`
   - Not in fact store
   - No tool can establish this
   - Marked as ASKABLE
   - **BLOCKED** - need user confirmation
-- Check 3: `(892 < 500 ; has_supervisor_approval(BK-2847))`
-  - 892 < 500 is FALSE
-  - Check `has_supervisor_approval`...
-    - **TOOL CALL**: `check_approval_queue({booking_id: "BK-2847"})`
-    - Tool returns: `{approved: false, pending: false}`
-  - No supervisor approval
-  - **BLOCKED** - need approval for amount > $500
 
 **GUARD RESULT**:
 ```
 Denied {
-  reason: [
-    "user_confirms_cancellation_understanding not established",
-    "Amount $892 exceeds $500 limit, supervisor approval required"
-  ],
-  askable: [user_confirms_cancellation_understanding(usr_sarah_chen)],
-  can_request_escalation: true
+  reason: ["user_confirms_cancellation_understanding not established"],
+  askable: [user_confirms_cancellation_understanding(usr_sarah_chen)]
 }
 ```
 
-#### TURN 2: LLM Response (asking user + requesting escalation)
+#### TURN 2: LLM Response (asking for confirmation)
 
 **Agent**: "Good news, Sarah! Your flight AL-445 has been delayed over 6 hours, which qualifies you for a full refund of $892 under both our airline disruption policy and EU261 passenger rights.
 
-Before I process this, I need to confirm: Do you understand that once refunded, your booking will be cancelled and the ticket cannot be used?
-
-Also, since this refund exceeds $500, I'm requesting supervisor approval now - this usually takes just a moment."
-
-[SYSTEM: Automatically triggered supervisor approval request]
+Before I process this, I need to confirm: Do you understand that once refunded, your booking will be cancelled and the ticket cannot be used?"
 
 #### TURN 3: User confirms
 
@@ -374,20 +360,16 @@ Allowed: predicate is marked askable
 
 #### LLM AGENT: Re-attempts refund
 
-Tool call: `issue_refund(booking_of_interest, booking_amount_of_interest)`
+Tool call: `issue_full_refund(booking_of_interest)`
 
-#### GUARD EVALUATOR: Re-checking issue_refund guard
+#### GUARD EVALUATOR: Re-checking issue_full_refund guard
 
-- Check 1: `eligible_for_refund(BK-2847, _, _)` -> PASS
+- Check 1: `eligible_for_refund(BK-2847, full, _)` -> PASS
 - Check 2: `user_confirms_cancellation_understanding(current_user)` -> Now in fact store! PASS
-- Check 3: `(892 < 500 ; has_supervisor_approval(BK-2847))`
-  - **TOOL CALL**: `check_approval_queue({booking_id: "BK-2847"})`
-  - Tool returns: `{approved: true, approver: "sup_jones", timestamp: "2025-01-15T14:32:00Z"}`
-  - Supervisor approved! PASS
 
-**GUARD RESULT**: `Allowed { trace: <full proof tree with all justifications> }`
+**GUARD RESULT**: `Allowed [<proof tree with all justifications>]`
 
-#### TOOL EXECUTION: issue_refund("BK-2847", 892)
+#### TOOL EXECUTION: issue_full_refund("BK-2847")
 
 Tool returns:
 ```json
@@ -423,31 +405,21 @@ refund_decision:
   outcome: approved
   amount: 892.00
 
-  eligibility_proof:
-    primary_path: airline_fault
-    grounds:
-      - rule: "Flight delay > 3 hours triggers full refund"
-        facts:
-          - flight_delay_minutes(AL-445, 360)
-          - "360 > 180"
-    secondary_grounds:
-      - rule: "EU261 protection for delays > 5 hours from EU airports"
-        facts:
-          - flight_departure_airport(AL-445, "LHR")
-          - is_eu_airport("LHR") = true
-          - flight_delay_minutes(AL-445, 360)
-          - "360 > 300"
-
-  guard_satisfaction:
-    - predicate: eligible_for_refund(BK-2847, full, airline_fault)
-      status: proven
-    - predicate: user_confirms_cancellation_understanding(usr_sarah_chen)
-      status: established_via_user_confirmation
-      timestamp: "2025-01-15T14:31:45Z"
-    - predicate: has_supervisor_approval(BK-2847)
-      status: proven
-      approver: sup_jones
-      timestamp: "2025-01-15T14:32:00Z"
+  # Each proof includes a machine-readable trace and an LLM-generated summary
+  eligibility_proofs:
+    - description: "Flight delay > 3 hours triggers full refund"  # LLM summary of proof
+      facts:  # also embedded in trace, shown here for illustration
+        - flight_delay_minutes(AL-445, 360)
+        - "360 > 180"
+        - user_confirms_cancellation_understanding(usr_sarah_chen)  # askable, established via user confirmation
+      trace: <proof_tree>
+    - description: "EU261 protection for delays > 5 hours from EU airports"
+      facts:
+        - flight_departure_airport(AL-445, "LHR")
+        - is_eu_airport("LHR")
+        - flight_delay_minutes(AL-445, 360)
+        - "360 > 300"
+      trace: <proof_tree>
 
   context_establishment:
     booking_of_interest:
@@ -462,9 +434,7 @@ refund_decision:
     - get_booking(BK-2847) @ 14:30:02
     - get_flight_details(AL-445) @ 14:30:03
     - get_airport_info(LHR) @ 14:30:04
-    - check_approval_queue(BK-2847) @ 14:30:05 -> false
-    - check_approval_queue(BK-2847) @ 14:32:01 -> true
-    - issue_refund(BK-2847, 892) @ 14:32:02
+    - issue_full_refund(BK-2847) @ 14:31:50
 ```
 
 ---
@@ -632,18 +602,18 @@ Try: `fare_allows_refund(B, partial) :- booking_fare_class(B, "standard"), hours
 
 Try: `bereavement_eligible(B) :- user_claims_bereavement(current_user), user_confirms_upload_documentation(current_user, "death_certificate")`
 - `user_claims_bereavement` is ASKABLE
-- Not established - could ask user, but context suggests "plans changed" not bereavement
+- Not established
 
-**bereavement BLOCKED** on askable - low relevance given context
+**bereavement BLOCKED** on askable
 
 **PATH 6: medical_basic (voucher)**
 
 Try: `fare_allows_refund(B, voucher) :- booking_fare_class(B, "basic"), user_claims_medical_emergency(current_user), user_confirms_upload_documentation(current_user, "medical_cert")`
 - `booking_fare_class(BK-5521, "basic")` -> PASS
 - `user_claims_medical_emergency` is ASKABLE
-- Not established - context says "plans changed"
+- Not established
 
-**medical_basic BLOCKED** on askable - low relevance given context
+**medical_basic BLOCKED** on askable
 
 **SOLVER RESULT**:
 ```
@@ -654,7 +624,7 @@ Failure {
     fare_allows_refund(BK-5521, full),
     fare_allows_refund(BK-5521, partial)
   ],
-  askable_but_unlikely: [
+  askable: [
     user_claims_bereavement(usr_marcus_webb),
     user_claims_medical_emergency(usr_marcus_webb)
   ],
@@ -727,17 +697,70 @@ Failure {
 }
 ```
 
-#### TURN 4: LLM explains voucher option
+#### LLM AGENT: Issues hypothetical query
 
-**Agent**: "I'm sorry to hear about your back, Marcus. Yes, a medical issue documented by your doctor does qualify you for our medical emergency exception.
+Before making any claims about eligibility, the LLM issues a hypothetical query to verify what would happen if Marcus provides documentation:
 
-For Basic Economy bookings, this means you're eligible for a travel voucher for the full $289 value (valid for 1 year), rather than a cash refund.
+**HYPOTHETICAL QUERY**:
+```
+eligible_for_refund(booking_of_interest, RefundType, Reason)
+  assuming: [user_confirms_upload_documentation(current_user, "medical_certificate")]
+```
+
+#### SOLVER: Hypothetical evaluation
+
+The solver treats the assumed fact as temporarily true for this query only:
+
+- `booking_fare_class(BK-5521, "basic")` -> PASS (from fact store)
+- `user_claims_medical_emergency(usr_marcus_webb)` -> PASS (established earlier)
+- `user_confirms_upload_documentation(usr_marcus_webb, "medical_certificate")` -> PASS (hypothetical)
+
+**SOLVER RESULT**:
+```
+HypotheticalSuccess {
+  bindings: {RefundType: voucher, Reason: "medical_basic"},
+  assumed_facts: [user_confirms_upload_documentation(usr_marcus_webb, "medical_certificate")],
+  trace: <proof_tree>,
+  note: "Hypothetical only - assumed facts not persisted, guards not satisfied"
+}
+```
+
+#### TURN 4: LLM explains voucher option (verified claim)
+
+**Agent**: "I'm sorry to hear about your back, Marcus. I've checked our policy: if you can provide a medical certificate from your doctor, you would qualify for our medical emergency exception.
+
+For Basic Economy bookings with medical documentation, this means you'd be eligible for a travel voucher for the full $289 value (valid for 1 year), rather than a cash refund.
 
 To process this, I'll need you to upload a medical certificate or doctor's note confirming you're unfit to fly. Do you have that documentation available, or can you get it from your doctor?"
 
 #### TURN 5: User decides not to proceed
 
 **Marcus**: "Hmm, a voucher isn't really what I wanted. And getting a doctor's note is a hassle. Is there really no way to get actual money back?"
+
+#### LLM AGENT: Queries alternative options
+
+Before responding, the LLM queries Sentinel for what alternatives are available:
+
+Query: `rebooking_allowed(booking_of_interest), rebooking_fee(booking_of_interest, Fee)`
+
+#### SOLVER: Rebooking query
+
+**Goal**: `rebooking_allowed(BK-5521), rebooking_fee(BK-5521, Fee)`
+
+- `booking_fare_class(BK-5521, "basic")` -> Already in fact store
+- **TOOL CALL**: `get_rebooking_policy({fare_class: "basic"})`
+  - Returns: `{rebooking_allowed: true, change_fee: 75, advance_notice_hours: 2}`
+  - Facts added:
+    - `rebooking_allowed(BK-5521)`
+    - `rebooking_fee(BK-5521, 75)`
+
+**SOLVER RESULT**:
+```
+Success {
+  bindings: {Fee: 75},
+  trace: <proof_tree>
+}
+```
 
 #### TURN 6: Final explanation
 
@@ -750,13 +773,9 @@ Unfortunately, Basic Economy fares are designed as our lowest-cost option specif
 
 The voucher is the best I can offer for a medical situation on this fare type.
 
-A few alternatives to consider:
+However, I can confirm that rebooking is available: you can keep the booking and rebook for a later date with a $75 change fee.
 
-1. Keep the booking and rebook for a later date ($75 change fee)
-2. Check if your travel insurance covers this
-3. Some credit cards offer trip cancellation protection
-
-Would you like me to check rebooking availability, or help with anything else?"
+Would you like me to check rebooking availability for alternative dates?"
 
 ### Denial Audit Trail
 
@@ -765,35 +784,31 @@ refund_decision:
   booking_id: BK-5521
   outcome: denied
 
+  # Each evaluated path includes a machine-readable trace and an LLM-generated summary
   paths_evaluated:
-    - path: airline_fault
-      result: failed
-      reason: "Flight AL-892 status is 'on_time', delay_minutes = 0"
-      required: "status = 'cancelled' OR delay_minutes > 180"
+    - result: failed
+      description: "Flight is on time with no delays (required: cancellation or delay > 3 hours)"
+      trace: <proof_tree>
 
-    - path: eu261
-      result: failed
-      reason: "Departure airport ORD is_eu = false"
-      required: "Departure from EU airport with delay > 300 minutes"
+    - result: failed
+      description: "Flight departs from Chicago (ORD), not an EU airport"
+      trace: <proof_tree>
 
-    - path: flexible_fare
-      result: failed
-      reason: "fare_class = 'basic', required 'flexible'"
+    - result: failed
+      description: "Basic Economy fare does not allow voluntary refunds"
+      trace: <proof_tree>
 
-    - path: standard_fare
-      result: failed
-      reason: "fare_class = 'basic', required 'standard'"
+    - result: not_claimed
+      description: "Bereavement path not pursued - user did not indicate family death"
+      trace: <proof_tree>
 
-    - path: bereavement
-      result: not_claimed
-      reason: "User did not claim bereavement circumstances"
-      would_require: "Death certificate of immediate family member"
-
-    - path: medical_basic
-      result: partial_match
-      reason: "User claimed medical emergency but declined documentation"
-      would_yield: "Travel voucher (not cash refund)"
+    - result: partial_match
+      description: "Medical emergency claimed but user declined to provide documentation"
+      facts:
+        - booking_fare_class(BK-5521, "basic")
+        - user_claims_medical_emergency(usr_marcus_webb)  # askable, established via user statement
       blocked_on: "user_confirms_upload_documentation"
+      trace: <proof_tree>
 
   customer_context:
     stated_reason: "Plans changed"
@@ -801,8 +816,7 @@ refund_decision:
 
   available_options_offered:
     - "Travel voucher with medical documentation"
-    - "Rebooking with $75 change fee"
-    - "Third-party travel insurance claim"
+    - "Rebooking with $75 change fee"  # verified via rebooking_fee query
 
   context_establishment:
     booking_of_interest:
@@ -818,6 +832,7 @@ refund_decision:
     - get_booking(BK-5521) @ 16:00:02
     - get_flight_details(AL-892) @ 16:00:03
     - get_airport_info(ORD) @ 16:00:04
+    - get_rebooking_policy("basic") @ 16:02:30
 ```
 
 ---
@@ -833,12 +848,6 @@ refund_decision:
   - Scenario A: User selects from 2 bookings via form
   - Scenario B: User confirms single booking via form
 
-- **Multi-layer guard checking**
-  - Scenario A: Refund guard triggers approval check
-
-- **Tool calls during guard eval**
-  - Scenario A: `check_approval_queue` called
-
 - **Askable predicates**
   - Scenario A: Cancellation confirmation
   - Scenario B: Medical claim, documentation
@@ -847,12 +856,20 @@ refund_decision:
   - Scenario A: For confirmation
   - Scenario B: For documentation request
 
-- **Supervisor escalation**
-  - Scenario A: Amount > $500 triggered
-
 - **Purely symbolic queries**
   - Scenario A: `booking_of_interest` not literals
   - Scenario B: Same
+
+- **Verified claims only**
+  - LLM must query Sentinel before making factual claims about policy
+  - Scenario B: Rebooking fee ($75) verified via `rebooking_fee` query before presenting to user
+
+- **Hypothetical queries for conditional claims**
+  - Before telling user "if you do X, you get Y", LLM must verify via hypothetical query
+  - Scenario B: LLM issues `eligible_for_refund(...) assuming: [user_confirms_upload_documentation(...)]`
+  - Solver returns `HypotheticalSuccess` confirming voucher eligibility under those assumptions
+  - LLM can then make verified conditional statement: "if you provide documentation, you would qualify"
+  - Hypothetical facts do not persist and do not satisfy guards
 
 - **Multiple eligibility paths**
   - Scenario A: airline_fault + EU261
