@@ -340,9 +340,7 @@ Denied {
 
 #### TURN 2: LLM Response (asking for confirmation)
 
-**Agent**: "Good news, Sarah! Your flight AL-445 has been delayed over 6 hours, which qualifies you for a full refund of $892 under both our airline disruption policy and EU261 passenger rights.
-
-Before I process this, I need to confirm: Do you understand that once refunded, your booking will be cancelled and the ticket cannot be used?"
+**Agent**: "You qualify for a full $892 refund (airline disruption + EU261). Before I process: do you understand your booking will be cancelled?"
 
 #### TURN 3: User confirms
 
@@ -384,18 +382,7 @@ Tool returns:
 
 #### TURN 4: Final response
 
-**Agent**: "All done, Sarah! I've processed your full refund of $892.
-
-- Refund reference: REF-99281
-- Amount: $892.00
-- Method: Back to your original payment method
-- Expected arrival: 3-5 business days
-
-Your refund was approved based on:
-- Flight AL-445 delayed 6+ hours (airline disruption policy)
-- Additionally protected under EU261 (departure from LHR)
-
-Is there anything else I can help you with?"
+**Agent**: "Done! Refund REF-99281: $892 to original payment, 3-5 days. Approved under airline disruption + EU261."
 
 ### Audit Trail Generated
 
@@ -642,20 +629,7 @@ Failure {
 
 #### TURN 2: LLM Response (with policy explanation)
 
-**Agent**: "I understand plans can change unexpectedly, Marcus. Unfortunately, I'm not able to process a refund for this booking. Let me explain why:
-
-Your booking BK-5521 is a Basic Economy fare on flight AL-892, which is currently on time. Here's what I checked:
-
-- Airline disruption: Your flight is operating normally (no cancellation or significant delay)
-- EU passenger rights: Doesn't apply - your flight departs from Chicago (ORD), not an EU airport
-- Fare class: Basic Economy tickets are non-refundable for voluntary changes. Flexible ($+180) or Standard ($+90) fares would have allowed this.
-
-There are two exceptions that *could* apply:
-
-- Medical emergency: If you can provide a medical certificate, you'd qualify for a travel voucher (not cash refund)
-- Bereavement: If this is due to a death in your immediate family, we offer a partial refund with documentation
-
-Would either of these situations apply to you? Or would you like me to help you explore rebooking options instead?"
+**Agent**: "Basic Economy on an on-time flight from ORD—no refund available. Exceptions: medical emergency (voucher with documentation) or bereavement (partial refund with death certificate). Do either apply?"
 
 #### TURN 3: User provides more context
 
@@ -727,11 +701,7 @@ HypotheticalSuccess {
 
 #### TURN 4: LLM explains voucher option (verified claim)
 
-**Agent**: "I'm sorry to hear about your back, Marcus. I've checked our policy: if you can provide a medical certificate from your doctor, you would qualify for our medical emergency exception.
-
-For Basic Economy bookings with medical documentation, this means you'd be eligible for a travel voucher for the full $289 value (valid for 1 year), rather than a cash refund.
-
-To process this, I'll need you to upload a medical certificate or doctor's note confirming you're unfit to fly. Do you have that documentation available, or can you get it from your doctor?"
+**Agent**: "With a medical certificate, you'd qualify for a $289 travel voucher (1 year validity). Can you upload documentation?"
 
 #### TURN 5: User decides not to proceed
 
@@ -764,18 +734,7 @@ Success {
 
 #### TURN 6: Final explanation
 
-**Agent**: "I completely understand, and I wish I could offer more flexibility.
-
-Unfortunately, Basic Economy fares are designed as our lowest-cost option specifically because they're non-refundable for voluntary cancellations. The only paths to a cash refund are:
-
-- If the airline cancels or significantly delays your flight
-- Bereavement (death of immediate family member)
-
-The voucher is the best I can offer for a medical situation on this fare type.
-
-However, I can confirm that rebooking is available: you can keep the booking and rebook for a later date with a $75 change fee.
-
-Would you like me to check rebooking availability for alternative dates?"
+**Agent**: "No cash refund path for Basic Economy without airline disruption or bereavement. Voucher is the best option for medical. Alternatively: rebook for $75 fee."
 
 ### Denial Audit Trail
 
