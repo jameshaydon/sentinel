@@ -12,12 +12,15 @@ build-type:     Simple
 
 library
   exposed-modules:
+      Examples.AirCanada.Facts
       Examples.AirCanada.MockDB
       Examples.AirCanada.Refund
       Examples.AirCanada.Tools
       Examples.AirCanada.Types
       Pre
       Sentinel.Agent
+      Sentinel.Facts
+      Sentinel.Guard
       Sentinel.LLM
       Sentinel.Output
       Sentinel.Pretty
@@ -55,6 +58,7 @@ library
     , containers
     , data-default
     , directory
+    , exceptions
     , extra
     , filepath
     , free
@@ -67,6 +71,7 @@ library
     , http-types
     , lattices
     , lens
+    , logict
     , mtl
     , openai
     , pretty-simple
@@ -74,6 +79,7 @@ library
     , prettyprinter-ansi-terminal
     , random
     , recursion-schemes
+    , repline
     , safe
     , scientific
     , servant-client
@@ -118,6 +124,7 @@ executable sentinel
     , containers
     , data-default
     , directory
+    , exceptions
     , extra
     , filepath
     , free
@@ -130,6 +137,7 @@ executable sentinel
     , http-types
     , lattices
     , lens
+    , logict
     , mtl
     , openai
     , pretty-simple
@@ -137,6 +145,7 @@ executable sentinel
     , prettyprinter-ansi-terminal
     , random
     , recursion-schemes
+    , repline
     , safe
     , scientific
     , sentinel
@@ -183,6 +192,7 @@ test-suite all
     , containers
     , data-default
     , directory
+    , exceptions
     , extra
     , filepath
     , free
@@ -195,6 +205,7 @@ test-suite all
     , http-types
     , lattices
     , lens
+    , logict
     , mtl
     , openai
     , pretty-simple
@@ -202,6 +213,7 @@ test-suite all
     , prettyprinter-ansi-terminal
     , random
     , recursion-schemes
+    , repline
     , safe
     , scientific
     , sentinel

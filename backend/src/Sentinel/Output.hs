@@ -12,6 +12,9 @@ module Sentinel.Output
     TurnStart (..),
     GuardPass (..),
     GuardDenied (..),
+    ResolutionAttempt (..),
+    QueryExecution (..),
+    NeedsUserInput (..),
   )
 where
 
@@ -174,4 +177,53 @@ instance Disp GuardDenied where
           errorText "✗ Guard denied for" <+> styledToolName (pretty tool),
           "",
           errorText (wrappedText reason)
+        ]
+
+-- | Resolution attempt for a blocked guard
+data ResolutionAttempt = ResolutionAttempt
+  { attemptToolName :: Text,
+    attemptNumber :: Int,
+    queriesCount :: Int
+  }
+  deriving stock (Show, Eq, Generic)
+
+instance Disp ResolutionAttempt where
+  disp (ResolutionAttempt tool attempt count) =
+    nest 4
+      $ vsep
+        [ "",
+          label "⟳ Resolving guard for" <+> styledToolName (pretty tool),
+          dimText ("  Attempt " <> pretty attempt <> ", running " <> pretty count <> " query(s)")
+        ]
+
+-- | Query being executed during resolution
+data QueryExecution = QueryExecution
+  { queryName :: Text,
+    queryInput :: Text
+  }
+  deriving stock (Show, Eq, Generic)
+
+instance Disp QueryExecution where
+  disp (QueryExecution name input) =
+    nest 6
+      $ vsep
+        [ dimText "→" <+> label "Query:" <+> styledToolName (pretty name),
+          dimText "  Input:" <+> dimText (wrappedText input)
+        ]
+
+-- | Guard needs user input to proceed
+data NeedsUserInput = NeedsUserInput
+  { inputToolName :: Text,
+    question :: Text
+  }
+  deriving stock (Show, Eq, Generic)
+
+instance Disp NeedsUserInput where
+  disp (NeedsUserInput tool q) =
+    nest 4
+      $ vsep
+        [ "",
+          label "? Guard for" <+> styledToolName (pretty tool) <+> label "needs user input:",
+          "",
+          wrappedText q
         ]

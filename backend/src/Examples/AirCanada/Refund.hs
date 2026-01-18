@@ -31,7 +31,7 @@ data TicketType
   = EconomyBasic
   | OtherNonRefundable
   | Refundable
-  deriving stock (Eq, Show, Generic)
+  deriving stock (Eq, Ord, Show, Generic)
   deriving anyclass (ToJSON, FromJSON)
 
 -- | Where the ticket was purchased
@@ -40,7 +40,7 @@ data BookingSource
   | TravelAgency
   | OtherAirline
   | GroupBooking
-  deriving stock (Eq, Show, Generic)
+  deriving stock (Eq, Ord, Show, Generic)
   deriving anyclass (ToJSON, FromJSON)
 
 -- | Reasons for involuntary refund (Air Canada's fault)

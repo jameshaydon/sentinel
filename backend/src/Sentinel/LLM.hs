@@ -1,5 +1,6 @@
 module Sentinel.LLM
   ( LLMConfig (..),
+    Model,
     Message (..),
     Tool,
     defaultConfig,

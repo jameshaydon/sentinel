@@ -27,7 +27,7 @@ data BookingStatus
   | Refunded
   | RefundedWithCredit
   | RefundDenied
-  deriving stock (Show, Eq, Generic)
+  deriving stock (Show, Eq, Ord, Generic)
   deriving anyclass (ToJSON, FromJSON)
 
 instance Disp BookingStatus where
@@ -44,7 +44,7 @@ data FlightStatus
   | Cancelled
   | Boarding
   | Landed
-  deriving stock (Show, Eq, Generic)
+  deriving stock (Show, Eq, Ord, Generic)
   deriving anyclass (ToJSON, FromJSON)
 
 instance Disp FlightStatus where

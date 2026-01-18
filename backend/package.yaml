@@ -59,7 +59,10 @@ dependencies:
   - haskeline
   - openai
   - servant-client
-  - vector  
+  - vector
+  - repline
+  - logict
+  - exceptions
 
 library:
   source-dirs: src

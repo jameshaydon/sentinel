@@ -2,11 +2,13 @@ module Main (main) where
 
 import Control.Monad.IO.Class (liftIO)
 import Data.Text qualified as T
+import Examples.AirCanada.Facts qualified as AirCanada
 import Examples.AirCanada.MockDB (initialDB)
 import Examples.AirCanada.Tools (airCanadaToolkit)
 import Examples.AirCanada.Types (AirlineDB)
 import Pre (Ann, Doc, putDocLn, renderDocPlain, vsep, wrappedText)
 import Sentinel.Agent (AgentConfig (..), AgentM, Message, defaultConfig, runAgent)
+import Sentinel.Facts qualified as Facts
 import Sentinel.LLM qualified as LLM
 import Sentinel.Tool qualified as Tool
 import System.Console.Haskeline (InputT, defaultSettings, getInputLine, outputStrLn, runInputT)
@@ -79,17 +81,25 @@ main = do
       config <- defaultConfig (T.pack apiKey)
       let toolkit = airCanadaToolkit
           db = initialDB
+          initialFacts = Facts.emptyFacts
 
-      let modelName = T.pack (show config.llmConfig.model)
+      let modelName = T.pack (show (config.llmConfig.model :: LLM.Model))
       putDocLn (readyDoc modelName)
 
-      repl config toolkit db [] 0
+      repl config toolkit db initialFacts [] 0
 
-repl :: AgentConfig -> Tool.Toolkit (AgentM AirlineDB) -> AirlineDB -> [Message] -> Int -> IO ()
-repl config toolkit db history turnCount = runInputT defaultSettings (loop db history turnCount)
+repl ::
+  AgentConfig ->
+  Tool.Toolkit (AgentM AirlineDB AirCanada.Fact) AirCanada.Fact ->
+  AirlineDB ->
+  Facts.FactsDB AirCanada.Fact ->
+  [Message] ->
+  Int ->
+  IO ()
+repl config toolkit db factsDb history turnCount = runInputT defaultSettings (loop db factsDb history turnCount)
   where
-    loop :: AirlineDB -> [Message] -> Int -> InputT IO ()
-    loop currentDb hist currentTurnCount = do
+    loop :: AirlineDB -> Facts.FactsDB AirCanada.Fact -> [Message] -> Int -> InputT IO ()
+    loop currentDb currentFacts hist currentTurnCount = do
       minput <- getInputLine "\n> "
       case minput of
         Nothing -> outputStrLn (T.unpack $ "\n" <> renderDocPlain goodbyeDoc)
@@ -97,6 +107,6 @@ repl config toolkit db history turnCount = runInputT defaultSettings (loop db hi
           | T.toLower (T.strip (T.pack input)) `elem` ["quit", "exit", "q"] ->
               outputStrLn (T.unpack $ "\n" <> renderDocPlain goodbyeDoc)
           | otherwise -> do
-              (response, newDb, newHist, newTurnCount) <- liftIO $ runAgent config toolkit currentDb hist currentTurnCount (T.pack input)
+              (response, newDb, newFacts, newHist, newTurnCount) <- liftIO $ runAgent config toolkit currentDb currentFacts hist currentTurnCount (T.pack input)
               outputStrLn (T.unpack $ "\n" <> renderDocPlain (agentResponseDoc response))
-              loop newDb newHist newTurnCount
+              loop newDb newFacts newHist newTurnCount

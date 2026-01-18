@@ -8,16 +8,25 @@ import Data.Aeson qualified as Aeson
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Text qualified as T
-import Examples.AirCanada.MockDB (attemptRefund, checkRefundEligibility, getBooking, getFlight, listBookingsForPassenger)
-import Examples.AirCanada.Refund (DeathCircumstance (..), SpecialException (..))
+import Examples.AirCanada.Facts qualified as Facts
+import Examples.AirCanada.MockDB (attemptRefund, getBooking, getFlight, listBookingsForPassenger)
+import Examples.AirCanada.Refund (BookingSource (..), DeathCircumstance (..), SpecialException (..))
 import Examples.AirCanada.Types
 import Pre
 import Sentinel.Agent (AgentM, AgentState (..))
+import Sentinel.Guard qualified as Guard
 import Sentinel.Schema qualified as Schema
+import Sentinel.Tool (ToolKind (..))
 import Sentinel.Tool qualified as Tool
 
+-- | Type alias for Air Canada agent monad
+type AirCanadaM = AgentM AirlineDB Facts.Fact
+
+-- | Type alias for Air Canada tools
+type AirCanadaTool = Tool.Tool AirCanadaM Facts.Fact
+
 -- | The retrieve booking tool.
-retrieveBookingTool :: Tool.Tool (AgentM AirlineDB)
+retrieveBookingTool :: AirCanadaTool
 retrieveBookingTool =
   Tool.Tool
     { toolName = "RetrieveBooking",
@@ -26,17 +35,25 @@ retrieveBookingTool =
         Schema.objectSchema
           [("bookingRef", Schema.stringProp "The 6-character booking reference (e.g., REF123)")]
           ["bookingRef"],
-      toolGuard = \_ -> pure Nothing,
+      toolKind = QueryTool,
+      toolGuard = userIdentityGuard,
       toolAction = \args -> do
         ref <- extractString "bookingRef" args ??: "Missing or invalid 'bookingRef' parameter"
         st <- lift get
         case getBooking ref st.db of
           Just booking -> pure $ renderDocPlain (disp booking)
-          Nothing -> throwError $ "No booking found with reference: " <> ref
+          Nothing -> throwError $ "No booking found with reference: " <> ref,
+      toolFactsProduced = \args -> do
+        st <- get
+        pure $ case extractString "bookingRef" args of
+          Nothing -> []
+          Just ref -> case getBooking ref st.db of
+            Nothing -> []
+            Just booking -> bookingToFacts booking
     }
 
 -- | The check flight status tool.
-checkFlightTool :: Tool.Tool (AgentM AirlineDB)
+checkFlightTool :: AirCanadaTool
 checkFlightTool =
   Tool.Tool
     { toolName = "CheckFlightStatus",
@@ -45,17 +62,25 @@ checkFlightTool =
         Schema.objectSchema
           [("flightNumber", Schema.stringProp "The flight number (e.g., AC101)")]
           ["flightNumber"],
-      toolGuard = \_ -> pure Nothing,
+      toolKind = QueryTool,
+      toolGuard = userIdentityGuard,
       toolAction = \args -> do
         flightNum <- extractString "flightNumber" args ??: "Missing or invalid 'flightNumber' parameter"
         st <- lift get
         case getFlight flightNum st.db of
           Just flight -> pure $ renderDocPlain (disp flight)
-          Nothing -> throwError $ "No flight found with number: " <> flightNum
+          Nothing -> throwError $ "No flight found with number: " <> flightNum,
+      toolFactsProduced = \args -> do
+        st <- get
+        pure $ case extractString "flightNumber" args of
+          Nothing -> []
+          Just flightNum -> case getFlight flightNum st.db of
+            Nothing -> []
+            Just flight -> flightToFacts flight
     }
 
 -- | The initiate refund tool.
-processRefundTool :: Tool.Tool (AgentM AirlineDB)
+processRefundTool :: AirCanadaTool
 processRefundTool =
   Tool.Tool
     { toolName = "InitiateRefund",
@@ -69,18 +94,8 @@ processRefundTool =
             ("reason", Schema.enumProp ["jury", "military", "death"] "Optional special circumstance reason: jury (jury duty), military (military orders), death (death circumstances)")
           ]
           ["bookingRef"],
-      toolGuard = \args -> do
-        let mRef = extractString "bookingRef" args
-        case mRef of
-          Nothing -> pure $ Just "Missing or invalid 'bookingRef' parameter"
-          Just ref -> do
-            let specialReason = case extractString "reason" args of
-                  Just "jury" -> Just JuryDuty
-                  Just "military" -> Just MilitaryOrders
-                  Just "death" -> Just (Death PassengerDeath)
-                  _ -> Nothing
-            st <- get
-            pure $ checkRefundEligibility (T.toUpper ref) specialReason st.db,
+      toolKind = ActionTool,
+      toolGuard = refundGuard,
       toolAction = \args -> do
         ref <- extractString "bookingRef" args ??: "Missing or invalid 'bookingRef' parameter"
         let specialReason = case extractString "reason" args of
@@ -91,11 +106,70 @@ processRefundTool =
         st <- lift get
         let (result, updatedDB) = attemptRefund (T.toUpper ref) specialReason st.db
         lift $ modify \s -> s {db = updatedDB}
-        pure result
+        pure result,
+      toolFactsProduced = \_ -> pure [] -- Action tools produce no facts
     }
 
+-- | Guard that requires user identity to be established.
+-- All query tools should use this to ensure we know who the user is.
+userIdentityGuard :: Aeson.Value -> Guard.GuardM Facts.Fact ()
+userIdentityGuard _ = do
+  -- Require that we have established who the user is
+  _ <- Guard.requireFactMatching \case
+    Facts.LoggedInUser _ -> True
+    _ -> False
+  pure ()
+
+-- | Guard for SearchBookingsByName - requires identity AND name must match logged-in user.
+searchBookingsGuard :: Aeson.Value -> Guard.GuardM Facts.Fact ()
+searchBookingsGuard args = do
+  -- First require user identity
+  loggedInUser <- Guard.requireFactMatching \case
+    Facts.LoggedInUser _ -> True
+    _ -> False
+  -- Extract the logged-in user's name
+  let userName = case loggedInUser of
+        Facts.LoggedInUser name -> name
+        _ -> "" -- Won't happen due to pattern match above
+  -- Verify the passengerName argument matches the logged-in user
+  case extractString "passengerName" args of
+    Nothing -> Guard.denyWith "Missing passengerName parameter"
+    Just name
+      | T.toUpper name == T.toUpper userName -> pure ()
+      | otherwise -> Guard.denyWith "Can only search bookings for yourself"
+
+-- | Guard for refund tool using LogicT.
+-- Requires: booking must exist in facts
+-- Forbids: booking from travel agency or other airline
+refundGuard :: Aeson.Value -> Guard.GuardM Facts.Fact ()
+refundGuard args = do
+  -- Extract booking reference from args
+  let mRef = extractString "bookingRef" args
+  case mRef of
+    Nothing -> Guard.denyWith "Missing or invalid 'bookingRef' parameter"
+    Just ref -> do
+      let normalizedRef = T.toUpper ref
+      -- Try to establish that booking exists
+      -- If not present, register a query that could establish it
+      Guard.tryEstablishFact
+        (Facts.BookingExists normalizedRef)
+        ( Guard.PendingQuery
+            { queryToolName = "RetrieveBooking",
+              queryArgs = Aeson.object [("bookingRef", Aeson.String ref)],
+              queryDescription = "Retrieve booking to verify it exists"
+            }
+        )
+      -- Forbid bookings from travel agencies (we can't process those)
+      Guard.forbidFactMatching \case
+        Facts.BookingSource bRef TravelAgency -> bRef == normalizedRef
+        _ -> False
+      -- Forbid bookings from other airlines (we can't process those)
+      Guard.forbidFactMatching \case
+        Facts.BookingSource bRef OtherAirline -> bRef == normalizedRef
+        _ -> False
+
 -- | The search bookings by passenger name tool.
-searchBookingsTool :: Tool.Tool (AgentM AirlineDB)
+searchBookingsTool :: AirCanadaTool
 searchBookingsTool =
   Tool.Tool
     { toolName = "SearchBookingsByName",
@@ -104,7 +178,8 @@ searchBookingsTool =
         Schema.objectSchema
           [("passengerName", Schema.stringProp "The passenger's full name")]
           ["passengerName"],
-      toolGuard = \_ -> pure Nothing,
+      toolKind = QueryTool,
+      toolGuard = searchBookingsGuard,
       toolAction = \args -> do
         name <- extractString "passengerName" args ??: "Missing or invalid 'passengerName' parameter"
         st <- lift get
@@ -117,7 +192,12 @@ searchBookingsTool =
                 [ "Found" <+> pretty (length bookings) <+> "booking(s):",
                   mempty,
                   vsep (punctuate (line <> "---" <> line) (fmap disp bookings))
-                ]
+                ],
+      toolFactsProduced = \args -> do
+        st <- get
+        pure $ case extractString "passengerName" args of
+          Nothing -> []
+          Just name -> concatMap bookingToFacts (listBookingsForPassenger name st.db)
     }
 
 -- | Helper to extract a string value from JSON args.
@@ -127,6 +207,35 @@ extractString key (Aeson.Object obj) =
     Just (Aeson.String s) -> Just s
     _ -> Nothing
 extractString _ _ = Nothing
+
+--------------------------------------------------------------------------------
+-- Fact Production Helpers
+--------------------------------------------------------------------------------
+
+-- | Convert a booking to its constituent facts.
+bookingToFacts :: Booking -> [Facts.Fact]
+bookingToFacts b =
+  [ Facts.BookingExists b.bookingRef,
+    Facts.BookingPassenger b.bookingRef b.passengerName,
+    Facts.BookingFlight b.bookingRef b.flightNo,
+    Facts.BookingStatus b.bookingRef b.bookingStatus,
+    Facts.BookingSource b.bookingRef b.ticketDetails.bookingSource,
+    Facts.BookingTicketType b.bookingRef b.ticketDetails.ticketType,
+    Facts.BookingPriceCents b.bookingRef b.priceCents,
+    Facts.BookingTicketClass b.bookingRef b.ticketClass
+  ]
+
+-- | Convert a flight to its constituent facts.
+flightToFacts :: Flight -> [Facts.Fact]
+flightToFacts f =
+  [ Facts.FlightExists f.flightNumber,
+    Facts.FlightStatusFact f.flightNumber f.status,
+    Facts.FlightRoute f.flightNumber f.origin f.destination
+  ]
+
+--------------------------------------------------------------------------------
+-- System Prompt
+--------------------------------------------------------------------------------
 
 systemPrompt :: Text
 systemPrompt =
@@ -143,7 +252,7 @@ systemPrompt =
       "Always be polite and professional."
     ]
 
-airCanadaToolkit :: Tool.Toolkit (AgentM AirlineDB)
+airCanadaToolkit :: Tool.Toolkit AirCanadaM Facts.Fact
 airCanadaToolkit =
   Tool.Toolkit
     { tools =
