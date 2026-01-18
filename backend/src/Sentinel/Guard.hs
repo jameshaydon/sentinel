@@ -1,14 +1,14 @@
 -- | Guard monad with LogicT for backtracking guard resolution.
 -- Guards control whether tool calls are allowed, using facts from the FactsDB.
--- When facts are missing, guards can request queries or user questions.
+-- Guards can directly execute data tools to establish missing facts.
 --
--- DESIGN: Guards only access facts, never the database directly. If a guard
--- needs data from the database, it should request a query via 'requestQuery'.
--- This ensures clean separation: facts are the "knowledge base", guards are
--- the "policy engine", and the agent is the "executor".
+-- DESIGN: Guards have access to the Sentinel environment and can execute
+-- data tools inline via 'establishFact'. This eliminates the need for
+-- external resolution loops.
 module Sentinel.Guard
   ( -- * Guard Monad
     GuardM,
+    GuardEnv (..),
     GuardState (..),
     runGuard,
 
@@ -16,9 +16,6 @@ module Sentinel.Guard
     GuardResult (..),
     GuardFailure (..),
     FailureReason (..),
-    Resolution (..),
-    PendingQuery (..),
-    UserQuestion (..),
 
     -- * Guard Primitives
     requireFact,
@@ -26,13 +23,15 @@ module Sentinel.Guard
     forbidFact,
     forbidFactMatching,
     denyWith,
+    failWith,
     getFacts,
     queryFacts,
-    requestQuery,
     askUser,
 
-    -- * Combinators
-    tryEstablishFact,
+    -- * Tool Execution
+    establishFact,
+    executeDataTool,
+    liftSentinelM,
 
     -- * Running Guards
     evaluateGuard,
@@ -42,10 +41,12 @@ where
 import Control.Monad.Logic (LogicT, observeAllT)
 import Control.Monad.State.Strict (StateT, runStateT)
 import Data.Aeson (Value)
+import Data.IORef (readIORef)
 import Data.Text qualified as T
 import Pre
 import Sentinel.Facts (FactsDB)
 import Sentinel.Facts qualified as Facts
+import Sentinel.Sentinel (SentinelEnv (..), SentinelM, UserQuestion (..), addFacts)
 
 -- | Convert a Show value to Text.
 tshow :: (Show a) => a -> Text
@@ -55,34 +56,6 @@ tshow = T.pack . show
 -- Types
 --------------------------------------------------------------------------------
 
--- | A pending query that could establish missing facts.
-data PendingQuery = PendingQuery
-  { -- | Name of the tool to call
-    queryToolName :: Text,
-    -- | Arguments to pass to the tool
-    queryArgs :: Value,
-    -- | Description of what facts this query would establish
-    queryDescription :: Text
-  }
-  deriving stock (Show, Eq, Generic)
-
--- | A question to ask the user when facts cannot be established via queries.
-data UserQuestion = UserQuestion
-  { -- | The question text to present to the user
-    questionText :: Text,
-    -- | Description of what fact we're trying to establish
-    factDescription :: Text
-  }
-  deriving stock (Show, Eq, Generic)
-
--- | How to resolve a blocked guard.
-data Resolution
-  = -- | Run these queries to try to establish missing facts
-    RunQueries (NonEmpty PendingQuery)
-  | -- | Ask the user this question (last resort)
-    AskUser UserQuestion
-  deriving stock (Show, Eq, Generic)
-
 -- | A specific reason why a guard branch failed.
 data FailureReason
   = -- | A required fact was not found
@@ -91,8 +64,8 @@ data FailureReason
     ForbiddenFact Text
   | -- | Policy explicitly denied with reason
     ExplicitDenial Text
-  | -- | A query was attempted but failed
-    QueryFailed Text Text -- ^ Tool name, error message
+  | -- | A data tool query failed
+    QueryFailed Text Text -- Tool name, error message
   deriving stock (Show, Eq, Generic)
 
 -- | Why a guard failed - collects all failure reasons.
@@ -108,17 +81,26 @@ data GuardResult
     GuardAllowed
   | -- | Guard failed with reason
     GuardDenied GuardFailure
-  | -- | Guard blocked, needs resolution before proceeding
-    NeedsResolution Resolution
+  | -- | Guard needs user input before proceeding
+    NeedsUserInput UserQuestion
   deriving stock (Show, Eq, Generic)
+
+-- | Environment for guard evaluation.
+--
+-- Contains:
+-- - Access to sentinel operations (facts, db)
+-- - A callback to execute data tools by name (avoids circular import with Tool)
+data GuardEnv db fact = GuardEnv
+  { -- | The sentinel environment for db/facts access
+    sentinelEnv :: SentinelEnv db fact,
+    -- | Callback to execute a data tool by name.
+    -- Returns (observation, producedFacts) on success.
+    runDataTool :: Text -> Value -> SentinelM db fact (Either Text (Text, [fact]))
+  }
 
 -- | State accumulated during guard evaluation.
 data GuardState fact = GuardState
-  { -- | Current facts (read from this)
-    currentFacts :: FactsDB fact,
-    -- | Queries that could be run to establish missing facts
-    pendingQueries :: [PendingQuery],
-    -- | Questions that could be asked if queries don't work
+  { -- | Questions that could be asked if facts can't be established
     pendingQuestions :: [UserQuestion],
     -- | All failure reasons encountered during evaluation
     failureReasons :: [FailureReason]
@@ -126,10 +108,11 @@ data GuardState fact = GuardState
   deriving stock (Generic)
 
 -- | The guard monad.
+--
 -- LogicT provides backtracking for trying multiple resolution paths.
--- StateT accumulates pending queries and questions.
--- Guards only access facts, not the database - keeping policy separate from data access.
-type GuardM fact = LogicT (StateT (GuardState fact) IO)
+-- StateT accumulates pending questions and failure reasons.
+-- ReaderT provides access to the guard environment (sentinel + tool execution).
+type GuardM db fact = LogicT (StateT (GuardState fact) (ReaderT (GuardEnv db fact) IO))
 
 --------------------------------------------------------------------------------
 -- Running Guards
@@ -137,125 +120,141 @@ type GuardM fact = LogicT (StateT (GuardState fact) IO)
 
 -- | Run a guard computation and collect all solutions.
 runGuard ::
-  FactsDB fact ->
-  GuardM fact a ->
+  GuardEnv db fact ->
+  GuardM db fact a ->
   IO ([a], GuardState fact)
-runGuard facts guardAction = do
+runGuard env guardAction = do
   let initialState =
         GuardState
-          { currentFacts = facts,
-            pendingQueries = [],
-            pendingQuestions = [],
+          { pendingQuestions = [],
             failureReasons = []
           }
-  runStateT (observeAllT guardAction) initialState
+  runReaderT (runStateT (observeAllT guardAction) initialState) env
 
 -- | Evaluate a guard and produce a result.
--- This runs the guard logic and interprets the outcome.
 evaluateGuard ::
-  FactsDB fact ->
-  GuardM fact () ->
+  GuardEnv db fact ->
+  GuardM db fact () ->
   IO GuardResult
-evaluateGuard facts guardAction = do
-  (solutions, finalState) <- runGuard facts guardAction
+evaluateGuard env guardAction = do
+  (solutions, finalState) <- runGuard env guardAction
   pure $ case solutions of
     -- At least one solution succeeded
     (_ : _) -> GuardAllowed
-    -- No solutions - check if we have pending work
-    [] -> case finalState.pendingQueries of
-      (q : qs) -> NeedsResolution (RunQueries (q :| qs))
-      [] -> case finalState.pendingQuestions of
-        (question : _) -> NeedsResolution (AskUser question)
-        [] -> GuardDenied (GuardFailure finalState.failureReasons)
+    -- No solutions - check if we have pending user questions
+    [] -> case finalState.pendingQuestions of
+      (question : _) -> NeedsUserInput question
+      [] -> GuardDenied (GuardFailure finalState.failureReasons)
+
+--------------------------------------------------------------------------------
+-- Sentinel Access
+--------------------------------------------------------------------------------
+
+-- | Lift a SentinelM operation into GuardM.
+liftSentinelM :: SentinelM db fact a -> GuardM db fact a
+liftSentinelM action = do
+  env <- lift $ lift ask
+  liftIO $ runReaderT action env.sentinelEnv
+
+-- | Get the current facts from the sentinel.
+getFacts :: GuardM db fact (FactsDB fact)
+getFacts = do
+  env <- lift $ lift ask
+  liftIO $ readIORef env.sentinelEnv.facts
 
 --------------------------------------------------------------------------------
 -- Guard Primitives
 --------------------------------------------------------------------------------
 
 -- | Record a failure reason and fail the branch.
-failWith :: FailureReason -> GuardM fact a
+failWith :: FailureReason -> GuardM db fact a
 failWith reason = do
   #failureReasons %= (reason :)
   empty
 
 -- | Require a specific fact to be present.
--- If the fact is missing, records the reason and fails the branch.
-requireFact :: (Ord fact, Show fact) => fact -> GuardM fact ()
+requireFact :: (Ord fact, Show fact) => fact -> GuardM db fact ()
 requireFact fact = do
-  facts <- use (#currentFacts)
+  facts <- getFacts
   unless (Facts.hasFact fact facts) do
     failWith (MissingFact $ "Required: " <> tshow fact)
 
 -- | Require a fact matching a predicate to be present.
 -- Returns the matching fact if found.
-requireFactMatching :: Text -> (fact -> Bool) -> GuardM fact fact
+requireFactMatching :: Text -> (fact -> Bool) -> GuardM db fact fact
 requireFactMatching description predicate = do
-  facts <- use (#currentFacts)
+  facts <- getFacts
   case Facts.queryFacts predicate facts of
     (f : _) -> pure f
     [] -> failWith (MissingFact description)
 
 -- | Forbid a specific fact from being present.
--- If the fact is present, records the reason and fails the branch.
-forbidFact :: (Ord fact, Show fact) => fact -> GuardM fact ()
+forbidFact :: (Ord fact, Show fact) => fact -> GuardM db fact ()
 forbidFact fact = do
-  facts <- use (#currentFacts)
+  facts <- getFacts
   when (Facts.hasFact fact facts) do
     failWith (ForbiddenFact $ "Forbidden: " <> tshow fact)
 
 -- | Forbid any fact matching a predicate.
--- If a matching fact is present, records the reason and fails the branch.
-forbidFactMatching :: (Show fact) => Text -> (fact -> Bool) -> GuardM fact ()
+forbidFactMatching :: (Show fact) => Text -> (fact -> Bool) -> GuardM db fact ()
 forbidFactMatching description predicate = do
-  facts <- use (#currentFacts)
+  facts <- getFacts
   case Facts.queryFacts predicate facts of
     (f : _) -> failWith (ForbiddenFact $ description <> ": " <> tshow f)
     [] -> pure ()
 
 -- | Explicitly deny with a reason. This always fails the guard.
--- The reason is recorded and will be included in the guard failure message.
-denyWith :: Text -> GuardM fact a
+denyWith :: Text -> GuardM db fact a
 denyWith reason = failWith (ExplicitDenial reason)
 
--- | Get all current facts.
-getFacts :: GuardM fact (FactsDB fact)
-getFacts = use #currentFacts
-
 -- | Query facts matching a predicate.
-queryFacts :: (fact -> Bool) -> GuardM fact [fact]
+queryFacts :: (fact -> Bool) -> GuardM db fact [fact]
 queryFacts predicate = do
-  facts <- use #currentFacts
+  facts <- getFacts
   pure (Facts.queryFacts predicate facts)
 
--- | Register a query that could establish missing facts.
--- This doesn't run the query immediately - it records it for the resolution phase.
-requestQuery :: PendingQuery -> GuardM fact ()
-requestQuery query = #pendingQueries %= (query :)
-
--- | Register a user question (last resort for establishing facts).
-askUser :: UserQuestion -> GuardM fact ()
+-- | Register a user question (for facts that can only be established by asking).
+askUser :: UserQuestion -> GuardM db fact ()
 askUser question = #pendingQuestions %= (question :)
 
 --------------------------------------------------------------------------------
--- Combinators
+-- Tool Execution
 --------------------------------------------------------------------------------
 
--- | Try to require a fact, and if missing, register a query that could establish it.
--- This is the key combinator for "auto-resolution" - the guard fails but records
--- what query could be run to make it succeed.
+-- | Execute a data tool by name and add its produced facts.
+--
+-- This is the core mechanism for guards to invoke data tools inline.
+-- The tool is looked up and executed via the callback in GuardEnv.
+executeDataTool :: (Ord fact) => Text -> Value -> GuardM db fact (Text, [fact])
+executeDataTool toolName args = do
+  env <- lift $ lift ask
+  result <- liftIO $ runReaderT (env.runDataTool toolName args) env.sentinelEnv
+  case result of
+    Left err -> failWith (QueryFailed toolName err)
+    Right (obs, facts) -> do
+      -- Add the produced facts to the fact store
+      liftSentinelM (addFacts facts)
+      pure (obs, facts)
+
+-- | Try to establish a fact by executing a data tool if needed.
+--
+-- If the fact is already present, succeeds immediately.
+-- Otherwise, executes the specified data tool and checks if the fact
+-- is now established.
 --
 -- Example:
 -- @
--- tryEstablishFact
---   (BookingExists ref)
---   (PendingQuery "RetrieveBooking" (object ["bookingRef" .= ref]) "Get booking details")
+-- establishFact (BookingExists ref) "RetrieveBooking" (object ["bookingRef" .= ref])
 -- @
-tryEstablishFact :: (Ord fact) => fact -> PendingQuery -> GuardM fact ()
-tryEstablishFact fact query = do
-  facts <- use #currentFacts
-  if Facts.hasFact fact facts
-    then pure () -- Fact already present, succeed
+establishFact :: (Ord fact, Show fact) => fact -> Text -> Value -> GuardM db fact ()
+establishFact targetFact toolName args = do
+  facts <- getFacts
+  if Facts.hasFact targetFact facts
+    then pure () -- Fact already present
     else do
-      -- Fact missing - register the query and fail this branch
-      requestQuery query
-      empty
+      -- Execute the data tool to try to establish the fact
+      _ <- executeDataTool toolName args
+      -- Check if the fact is now established
+      newFacts <- getFacts
+      unless (Facts.hasFact targetFact newFacts) $
+        failWith (MissingFact $ "Tool " <> toolName <> " did not establish: " <> tshow targetFact)

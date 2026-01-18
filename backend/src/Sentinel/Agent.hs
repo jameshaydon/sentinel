@@ -65,7 +65,7 @@ type AgentM db fact = ReaderT (AgentEnv db fact) (StateT AgentState IO)
 data AgentEnv db fact = AgentEnv
   { config :: AgentConfig,
     -- | Tool definitions for LLM (schemas and descriptions).
-    tools :: [Tool.Tool],
+    tools :: [Tool.LLMTool],
     -- | System prompt for the LLM.
     systemPrompt :: Text,
     -- | Sentinel for guarded tool calls.
@@ -140,7 +140,7 @@ processToolCall (ToolCall.ToolCall_Function {id = callId, function = fn}) = do
 --
 -- Takes:
 -- - Agent configuration
--- - Tool definitions for the LLM
+-- - Tool definitions for the LLM (LLMTool metadata)
 -- - System prompt
 -- - Sentinel and its environment (for guarded tool calls)
 -- - Message history
@@ -153,7 +153,7 @@ processToolCall (ToolCall.ToolCall_Function {id = callId, function = fn}) = do
 -- - Updated turn count
 runAgent ::
   AgentConfig ->
-  [Tool.Tool] ->
+  [Tool.LLMTool] ->
   Text ->
   Sentinel db fact ->
   SentinelEnv db fact ->

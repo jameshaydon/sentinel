@@ -30,7 +30,7 @@ module Sentinel.Sentinel
     getDb,
     modifyDb,
 
-    -- * Re-exports
+    -- * User Questions
     UserQuestion (..),
   )
 where
@@ -40,7 +40,19 @@ import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Pre
 import Sentinel.Facts (FactsDB)
 import Sentinel.Facts qualified as Facts
-import Sentinel.Guard (UserQuestion (..))
+
+--------------------------------------------------------------------------------
+-- User Questions
+--------------------------------------------------------------------------------
+
+-- | A question to ask the user when facts cannot be established via queries.
+data UserQuestion = UserQuestion
+  { -- | The question text to present to the user
+    questionText :: Text,
+    -- | Description of what fact we're trying to establish
+    factDescription :: Text
+  }
+  deriving stock (Show, Eq, Generic)
 
 --------------------------------------------------------------------------------
 -- Sentinel Result
@@ -112,7 +124,6 @@ runSentinelM env action = runReaderT action env
 -- particular domain (e.g., AirCanada). The implementation handles:
 -- - Guard evaluation
 -- - Automatic fact establishment via data tool calls
--- - Resolution loops
 --
 -- Example usage:
 -- @
@@ -124,10 +135,10 @@ data Sentinel db fact = Sentinel
     --
     -- This is the main entry point for the agent. It:
     -- 1. Evaluates the guard for the tool
-    -- 2. If blocked on missing facts, tries to establish them via data tools
-    -- 3. If still blocked and askable, returns 'AskUser'
-    -- 4. If allowed, executes the tool and returns 'Allowed'
-    -- 5. If denied, returns 'Denied'
+    -- 2. Guards may execute data tools inline to establish facts
+    -- 3. If guard allows, executes the tool and returns 'Allowed'
+    -- 4. If guard denies, returns 'Denied'
+    -- 5. If guard needs user input, returns 'AskUser'
     guardedCall :: Text -> Value -> SentinelM db fact SentinelResult,
     -- | Get a summary of current facts for the LLM context.
     summarizeFacts :: SentinelM db fact Text

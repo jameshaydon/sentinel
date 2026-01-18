@@ -28,6 +28,7 @@ library
       Sentinel.Schema
       Sentinel.Sentinel
       Sentinel.Tool
+      Sentinel.Toolkit
   other-modules:
       Paths_sentinel
   hs-source-dirs:

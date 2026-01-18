@@ -5,14 +5,15 @@ import Data.Text qualified as T
 import Examples.AirCanada.Facts qualified as AirCanada
 import Examples.AirCanada.MockDB (initialDB)
 import Examples.AirCanada.Sentinel (airCanadaSentinel)
-import Examples.AirCanada.Tools (airCanadaSystemPrompt, airCanadaTools)
+import Examples.AirCanada.Tools (airCanadaToolkit)
 import Examples.AirCanada.Types (AirlineDB)
 import Pre (Ann, Doc, putDocLn, renderDocPlain, vsep, wrappedText)
 import Sentinel.Agent (AgentConfig (..), Message, defaultConfig, runAgent)
 import Sentinel.Facts qualified as Facts
 import Sentinel.LLM qualified as LLM
 import Sentinel.Sentinel (Sentinel, SentinelEnv, newSentinelEnv)
-import Sentinel.Tool (Tool)
+import Sentinel.Tool (LLMTool)
+import Sentinel.Toolkit qualified as Toolkit
 import System.Console.Haskeline (InputT, defaultSettings, getInputLine, outputStrLn, runInputT)
 import System.Environment (lookupEnv)
 import Prelude
@@ -81,8 +82,9 @@ main = do
     Nothing -> putDocLn missingKeyDoc
     Just apiKey -> do
       config <- defaultConfig (T.pack apiKey)
-      let tools = airCanadaTools
-          systemPrompt = airCanadaSystemPrompt
+      let toolkit = airCanadaToolkit
+          tools = Toolkit.toLLMTools toolkit
+          systemPrompt = toolkit.systemPrompt
           sentinel = airCanadaSentinel
           db = initialDB
           initialFacts = Facts.emptyFacts
@@ -97,7 +99,7 @@ main = do
 
 repl ::
   AgentConfig ->
-  [Tool] ->
+  [LLMTool] ->
   T.Text ->
   Sentinel AirlineDB AirCanada.Fact ->
   SentinelEnv AirlineDB AirCanada.Fact ->
