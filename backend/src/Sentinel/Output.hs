@@ -48,7 +48,7 @@ instance Disp FinalAnswer where
           finalAnswer (wrappedText answer)
         ]
 
--- | Agent using a tool
+-- | Agent (LLM) using a tool
 data ToolUse = ToolUse
   { toolName :: Text,
     toolInput :: Text
@@ -60,7 +60,7 @@ instance Disp ToolUse where
     nest 4
       $ vsep
         [ "",
-          subheader "## Tool Use",
+          subheader "## Tool Use" <+> dimText "(LLM)",
           "",
           label "Tool:" <+> styledToolName (pretty tool),
           label "Input:" <+> dimText (wrappedText input)
@@ -75,7 +75,7 @@ instance Disp Observation where
     nest 4
       $ vsep
         [ "",
-          subheader "## Observation",
+          subheader "## Result",
           "",
           styledObservation (wrappedText result)
         ]
@@ -196,7 +196,7 @@ instance Disp ResolutionAttempt where
           dimText ("  Attempt " <> pretty attempt <> ", running " <> pretty count <> " query(s)")
         ]
 
--- | Query being executed during resolution
+-- | Tool call triggered by Sentinel for data gathering (not LLM-initiated)
 data QueryExecution = QueryExecution
   { queryName :: Text,
     queryInput :: Text
@@ -205,10 +205,13 @@ data QueryExecution = QueryExecution
 
 instance Disp QueryExecution where
   disp (QueryExecution name input) =
-    nest 6
+    nest 4
       $ vsep
-        [ dimText "→" <+> label "Query:" <+> styledToolName (pretty name),
-          dimText "  Input:" <+> dimText (wrappedText input)
+        [ "",
+          subheader "## Tool Use" <+> dimText "(Sentinel)",
+          "",
+          label "Tool:" <+> styledToolName (pretty name),
+          label "Input:" <+> dimText (wrappedText input)
         ]
 
 -- | Guard needs user input to proceed

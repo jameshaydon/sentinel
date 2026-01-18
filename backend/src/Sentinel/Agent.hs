@@ -12,18 +12,16 @@ where
 
 import Control.Monad.State.Strict
 import Data.Aeson qualified as Aeson
-import Data.Aeson.Text qualified as Aeson.Text
 import Data.Text.Encoding qualified as T.Encoding
-import Data.Text.Lazy qualified as T.Lazy
 import Data.Vector qualified as Vector
 import OpenAI.V1.Chat.Completions qualified as Chat
 import OpenAI.V1.ToolCall qualified as ToolCall
 import Pre
-import Sentinel.Facts qualified as Facts
-import Sentinel.Guard qualified as Guard
 import Sentinel.LLM (Message (..))
 import Sentinel.LLM qualified as LLM
 import Sentinel.Output qualified as Output
+import Sentinel.Sentinel (Sentinel, SentinelEnv, SentinelResult (..))
+import Sentinel.Sentinel qualified as Sentinel
 import Sentinel.Tool qualified as Tool
 
 --------------------------------------------------------------------------------
@@ -34,9 +32,7 @@ import Sentinel.Tool qualified as Tool
 data AgentConfig = AgentConfig
   { llmConfig :: LLM.LLMConfig,
     maxIterations :: Int,
-    maxMessages :: Int,
-    -- | Maximum attempts to resolve a blocked guard by running queries.
-    maxGuardResolutionAttempts :: Int
+    maxMessages :: Int
   }
 
 -- | Create default configuration using OpenAI API.
@@ -47,34 +43,38 @@ defaultConfig key = do
     AgentConfig
       { llmConfig = llmConfig,
         maxIterations = 10,
-        maxMessages = 50,
-        maxGuardResolutionAttempts = 3
+        maxMessages = 50
       }
 
 --------------------------------------------------------------------------------
 -- AgentM Monad
 --------------------------------------------------------------------------------
 
-data AgentState db fact = AgentState
-  { db :: db,
-    -- | Accumulated facts during conversation.
-    facts :: Facts.FactsDB fact,
-    -- | Messages stored in reverse order (newest first) for efficient prepending.
+-- | Agent state - only contains conversation-related state.
+-- Database and facts are now managed by Sentinel via SentinelEnv.
+data AgentState = AgentState
+  { -- | Messages stored in reverse order (newest first) for efficient prepending.
     messages :: [Message],
     turnCount :: !Int,
     iterationCount :: !Int
   }
   deriving stock (Generic)
 
-type AgentM db fact = ReaderT (AgentEnv db fact) (StateT (AgentState db fact) IO)
+type AgentM db fact = ReaderT (AgentEnv db fact) (StateT AgentState IO)
 
 data AgentEnv db fact = AgentEnv
   { config :: AgentConfig,
-    toolkit :: Tool.Toolkit (AgentM db fact) fact,
-    systemPrompt :: Text
+    -- | Tool definitions for LLM (schemas and descriptions).
+    tools :: [Tool.Tool],
+    -- | System prompt for the LLM.
+    systemPrompt :: Text,
+    -- | Sentinel for guarded tool calls.
+    sentinel :: Sentinel db fact,
+    -- | Sentinel environment (shared state for db and facts).
+    sentinelEnv :: SentinelEnv db fact
   }
 
-runAgentM :: AgentEnv db fact -> AgentState db fact -> AgentM db fact a -> IO (a, AgentState db fact)
+runAgentM :: AgentEnv db fact -> AgentState -> AgentM db fact a -> IO (a, AgentState)
 runAgentM env initialState action =
   runStateT (runReaderT action env) initialState
 
@@ -92,179 +92,96 @@ trimHistory maxMsgs = take maxMsgs
 --------------------------------------------------------------------------------
 
 callLLM :: [LLM.Tool] -> AgentM db fact (Either Text (Chat.Message Text))
-callLLM tools = do
+callLLM llmTools = do
   env <- ask
   msgs <- use #messages
   let trimmedMsgs = trimHistory env.config.maxMessages msgs
       -- Reverse to get chronological order for the API
       chronologicalMsgs = reverse trimmedMsgs
-  liftIO $ LLM.callChatCompletion env.config.llmConfig env.systemPrompt chronologicalMsgs tools
+  liftIO $ LLM.callChatCompletion env.config.llmConfig env.systemPrompt chronologicalMsgs llmTools
 
 --------------------------------------------------------------------------------
--- Guard Resolution
+-- Tool Execution (via Sentinel)
 --------------------------------------------------------------------------------
 
--- | Execute a pending query to establish facts.
--- Returns True if the query succeeded and facts were added.
-executeQuery :: (Ord fact) => Guard.PendingQuery -> AgentM db fact Bool
-executeQuery query = do
-  env <- ask
-  let queryName = query.queryToolName
-      queryArgs = query.queryArgs
-      argsText = T.Lazy.toStrict (Aeson.Text.encodeToLazyText queryArgs)
-
-  -- Display the query being executed
-  liftIO $ putDispLn (Output.QueryExecution queryName argsText)
-
-  -- Find the query tool
-  let foundTool = find (\t -> t.toolName == queryName) env.toolkit.tools
-  case foundTool of
-    Nothing -> do
-      liftIO $ putDispLn (Output.ToolError $ "Resolution query tool not found: " <> queryName)
-      pure False
-    Just tool -> do
-      -- Execute the query (ignore its guard since query tools have trivial guards)
-      result <- runExceptT (tool.toolAction queryArgs)
-      case result of
-        Left err -> do
-          liftIO $ putDispLn (Output.ToolError err)
-          pure False
-        Right _obs -> do
-          -- Extract and add facts from the query result
-          producedFacts <- tool.toolFactsProduced queryArgs
-          #facts %= Facts.addFacts producedFacts
-          pure True
-
--- | Try to resolve a blocked guard by executing pending queries.
--- Returns the final guard result after resolution attempts.
-resolveGuard ::
-  (Ord fact) =>
-  Int ->
-  Tool.Tool (AgentM db fact) fact ->
-  Aeson.Value ->
-  AgentM db fact Guard.GuardResult
-resolveGuard attemptsRemaining tool args = do
-  currentFacts <- use #facts
-  result <- liftIO $ Guard.evaluateGuard currentFacts (tool.toolGuard args)
-  case result of
-    Guard.GuardAllowed -> pure Guard.GuardAllowed
-    Guard.GuardDenied failure -> pure (Guard.GuardDenied failure)
-    Guard.NeedsResolution (Guard.RunQueries queries) | attemptsRemaining > 0 -> do
-      -- Display resolution attempt
-      let attemptNum = 4 - attemptsRemaining -- Assuming maxGuardResolutionAttempts = 3
-      liftIO $ putDispLn (Output.ResolutionAttempt tool.toolName attemptNum (length queries))
-
-      -- Execute each pending query
-      results <- traverse executeQuery (toList queries)
-
-      -- If at least one query succeeded, retry the guard
-      if or results
-        then resolveGuard (attemptsRemaining - 1) tool args
-        else -- All queries failed, return the resolution need
-          pure result
-    other -> pure other
-
---------------------------------------------------------------------------------
--- Tool Execution
---------------------------------------------------------------------------------
-
--- | Process a single tool call and return the result message.
-processToolCall :: (Ord fact) => ToolCall.ToolCall -> AgentM db fact Message
+-- | Process a single tool call via Sentinel and return the result message.
+processToolCall :: ToolCall.ToolCall -> AgentM db fact Message
 processToolCall (ToolCall.ToolCall_Function {id = callId, function = fn}) = do
   env <- ask
   let toolName = fn.name
       argsJson = fn.arguments
 
-  liftIO $ putDispLn (Output.ToolUse toolName argsJson)
-
   -- Decode the raw JSON string from OpenAI into a Value
   let mArgs = Aeson.decodeStrict (T.Encoding.encodeUtf8 argsJson) :: Maybe Aeson.Value
 
-  result <- case mArgs of
-    Nothing -> pure $ Left $ "Could not parse arguments JSON: " <> argsJson
+  case mArgs of
+    Nothing -> do
+      let err = "Could not parse arguments JSON: " <> argsJson
+      liftIO $ putDispLn (Output.ToolError err)
+      pure $ ToolMsg callId ("ERROR: " <> err)
     Just args -> do
-      -- Find the tool in the list
-      let foundTool = find (\t -> t.toolName == toolName) env.toolkit.tools
-      case foundTool of
-        Nothing -> pure $ Left $ "Tool not found: " <> toolName
-        Just tool -> do
-          -- Run the LogicT-based guard with auto-resolution
-          maxAttempts <- asks (.config.maxGuardResolutionAttempts)
-          guardResult <- resolveGuard maxAttempts tool args
-          case guardResult of
-            Guard.GuardDenied failure -> do
-              let reason = formatGuardFailure failure
-              liftIO $ putDispLn (Output.GuardDenied toolName reason)
-              pure $ Left $ "Guard denied: " <> reason
-            Guard.NeedsResolution (Guard.AskUser question) -> do
-              -- User input is needed as a last resort
-              liftIO $ putDispLn (Output.NeedsUserInput toolName question.questionText)
-              pure $ Left $ "Guard needs user input: " <> question.questionText
-            Guard.NeedsResolution (Guard.RunQueries _) -> do
-              -- Resolution attempts exhausted
-              liftIO $ putDispLn (Output.GuardDenied toolName "Could not establish required facts after resolution attempts")
-              pure $ Left $ "Guard blocked: could not establish required facts"
-            Guard.GuardAllowed -> do
-              liftIO $ putDispLn (Output.GuardPass toolName)
-              -- Execute the tool action (which can modify DB state via 'modify')
-              actionResult <- runExceptT (tool.toolAction args)
-              -- On success, collect facts produced by the tool
-              case actionResult of
-                Right _ -> do
-                  producedFacts <- tool.toolFactsProduced args
-                  #facts %= Facts.addFacts producedFacts
-                Left _ -> pure ()
-              pure actionResult
-
-  let resultText = either ("ERROR: " <>) (\x -> x) result
-  liftIO $ case result of
-    Left err -> putDispLn (Output.ToolError err)
-    Right obs -> putDispLn (Output.Observation obs)
-
-  pure $ ToolMsg callId resultText
-
--- | Format a guard failure for display.
-formatGuardFailure :: Guard.GuardFailure -> Text
-formatGuardFailure = \case
-  Guard.FactNotEstablished reason -> "Missing required fact: " <> reason
-  Guard.ForbiddenFactPresent reason -> "Forbidden fact present: " <> reason
-  Guard.PolicyDenied reason -> reason
+      -- Call Sentinel to guard and execute the tool
+      result <- liftIO $ Sentinel.runSentinelM env.sentinelEnv (env.sentinel.guardedCall toolName args)
+      case result of
+        Allowed obs -> do
+          pure $ ToolMsg callId obs
+        Denied reason -> do
+          pure $ ToolMsg callId ("ERROR: " <> reason)
+        AskUser question -> do
+          -- For now, return the question as an error - the agent should ask the user
+          -- TODO: In Phase 5, this should trigger a user interaction flow
+          pure $ ToolMsg callId ("NEED USER INPUT: " <> question.questionText)
 
 --------------------------------------------------------------------------------
 -- Main Agent Loop
 --------------------------------------------------------------------------------
 
+-- | Run the agent with a user query.
+--
+-- Takes:
+-- - Agent configuration
+-- - Tool definitions for the LLM
+-- - System prompt
+-- - Sentinel and its environment (for guarded tool calls)
+-- - Message history
+-- - Current turn count
+-- - User's query
+--
+-- Returns:
+-- - Response text
+-- - Updated message history
+-- - Updated turn count
 runAgent ::
-  (Ord fact) =>
   AgentConfig ->
-  Tool.Toolkit (AgentM db fact) fact ->
-  db ->
-  Facts.FactsDB fact ->
+  [Tool.Tool] ->
+  Text ->
+  Sentinel db fact ->
+  SentinelEnv db fact ->
   [Message] ->
   Int ->
   Text ->
-  IO (Text, db, Facts.FactsDB fact, [Message], Int)
-runAgent config toolkit db initialFacts history turnCount userQuery = do
+  IO (Text, [Message], Int)
+runAgent config tools systemPrompt sentinel sentinelEnv history turnCount userQuery = do
   let newTurnCount = turnCount + 1
   putDispLn (Output.TurnStart newTurnCount userQuery)
   let env =
         AgentEnv
           { config,
-            toolkit,
-            systemPrompt = toolkit.systemPrompt
+            tools,
+            systemPrompt,
+            sentinel,
+            sentinelEnv
           }
       initialState =
         AgentState
-          { db,
-            facts = initialFacts,
-            messages = UserMsg userQuery : history,
+          { messages = UserMsg userQuery : history,
             turnCount = newTurnCount,
             iterationCount = 0
           }
   (response, finalState) <- runAgentM env initialState agentLoop
-  pure (response, finalState.db, finalState.facts, finalState.messages, finalState.turnCount)
+  pure (response, finalState.messages, finalState.turnCount)
 
-agentLoop :: (Ord fact) => AgentM db fact Text
+agentLoop :: AgentM db fact Text
 agentLoop = do
   env <- ask
   iteration <- use #iterationCount
@@ -276,7 +193,7 @@ agentLoop = do
     else do
       liftIO $ putDispLn (Output.Iteration iteration)
       #iterationCount += 1
-      let openAITools = Tool.toOpenAITool <$> env.toolkit.tools
+      let openAITools = Tool.toOpenAITool <$> env.tools
       result <- callLLM openAITools
       case result of
         Left err -> do
@@ -287,7 +204,7 @@ agentLoop = do
         Right msg ->
           handleResponse msg
 
-handleResponse :: (Ord fact) => Chat.Message Text -> AgentM db fact Text
+handleResponse :: Chat.Message Text -> AgentM db fact Text
 handleResponse msg = case msg of
   Chat.Assistant {assistant_content, tool_calls} ->
     case tool_calls of

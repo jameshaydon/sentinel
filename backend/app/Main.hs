@@ -4,13 +4,15 @@ import Control.Monad.IO.Class (liftIO)
 import Data.Text qualified as T
 import Examples.AirCanada.Facts qualified as AirCanada
 import Examples.AirCanada.MockDB (initialDB)
-import Examples.AirCanada.Tools (airCanadaToolkit)
+import Examples.AirCanada.Sentinel (airCanadaSentinel)
+import Examples.AirCanada.Tools (airCanadaSystemPrompt, airCanadaTools)
 import Examples.AirCanada.Types (AirlineDB)
 import Pre (Ann, Doc, putDocLn, renderDocPlain, vsep, wrappedText)
-import Sentinel.Agent (AgentConfig (..), AgentM, Message, defaultConfig, runAgent)
+import Sentinel.Agent (AgentConfig (..), Message, defaultConfig, runAgent)
 import Sentinel.Facts qualified as Facts
 import Sentinel.LLM qualified as LLM
-import Sentinel.Tool qualified as Tool
+import Sentinel.Sentinel (Sentinel, SentinelEnv, newSentinelEnv)
+import Sentinel.Tool (Tool)
 import System.Console.Haskeline (InputT, defaultSettings, getInputLine, outputStrLn, runInputT)
 import System.Environment (lookupEnv)
 import Prelude
@@ -79,27 +81,34 @@ main = do
     Nothing -> putDocLn missingKeyDoc
     Just apiKey -> do
       config <- defaultConfig (T.pack apiKey)
-      let toolkit = airCanadaToolkit
+      let tools = airCanadaTools
+          systemPrompt = airCanadaSystemPrompt
+          sentinel = airCanadaSentinel
           db = initialDB
           initialFacts = Facts.emptyFacts
+
+      -- Create the Sentinel environment with shared state
+      sentinelEnv <- newSentinelEnv db initialFacts
 
       let modelName = T.pack (show (config.llmConfig.model :: LLM.Model))
       putDocLn (readyDoc modelName)
 
-      repl config toolkit db initialFacts [] 0
+      repl config tools systemPrompt sentinel sentinelEnv [] 0
 
 repl ::
   AgentConfig ->
-  Tool.Toolkit (AgentM AirlineDB AirCanada.Fact) AirCanada.Fact ->
-  AirlineDB ->
-  Facts.FactsDB AirCanada.Fact ->
+  [Tool] ->
+  T.Text ->
+  Sentinel AirlineDB AirCanada.Fact ->
+  SentinelEnv AirlineDB AirCanada.Fact ->
   [Message] ->
   Int ->
   IO ()
-repl config toolkit db factsDb history turnCount = runInputT defaultSettings (loop db factsDb history turnCount)
+repl config tools systemPrompt sentinel sentinelEnv history turnCount =
+  runInputT defaultSettings (loop history turnCount)
   where
-    loop :: AirlineDB -> Facts.FactsDB AirCanada.Fact -> [Message] -> Int -> InputT IO ()
-    loop currentDb currentFacts hist currentTurnCount = do
+    loop :: [Message] -> Int -> InputT IO ()
+    loop hist currentTurnCount = do
       minput <- getInputLine "\n> "
       case minput of
         Nothing -> outputStrLn (T.unpack $ "\n" <> renderDocPlain goodbyeDoc)
@@ -107,6 +116,6 @@ repl config toolkit db factsDb history turnCount = runInputT defaultSettings (lo
           | T.toLower (T.strip (T.pack input)) `elem` ["quit", "exit", "q"] ->
               outputStrLn (T.unpack $ "\n" <> renderDocPlain goodbyeDoc)
           | otherwise -> do
-              (response, newDb, newFacts, newHist, newTurnCount) <- liftIO $ runAgent config toolkit currentDb currentFacts hist currentTurnCount (T.pack input)
+              (response, newHist, newTurnCount) <- liftIO $ runAgent config tools systemPrompt sentinel sentinelEnv hist currentTurnCount (T.pack input)
               outputStrLn (T.unpack $ "\n" <> renderDocPlain (agentResponseDoc response))
-              loop newDb newFacts newHist newTurnCount
+              loop newHist newTurnCount

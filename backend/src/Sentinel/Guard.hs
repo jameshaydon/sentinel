@@ -15,6 +15,7 @@ module Sentinel.Guard
     -- * Guard Results
     GuardResult (..),
     GuardFailure (..),
+    FailureReason (..),
     Resolution (..),
     PendingQuery (..),
     UserQuestion (..),
@@ -41,9 +42,14 @@ where
 import Control.Monad.Logic (LogicT, observeAllT)
 import Control.Monad.State.Strict (StateT, runStateT)
 import Data.Aeson (Value)
+import Data.Text qualified as T
 import Pre
 import Sentinel.Facts (FactsDB)
 import Sentinel.Facts qualified as Facts
+
+-- | Convert a Show value to Text.
+tshow :: (Show a) => a -> Text
+tshow = T.pack . show
 
 --------------------------------------------------------------------------------
 -- Types
@@ -77,14 +83,23 @@ data Resolution
     AskUser UserQuestion
   deriving stock (Show, Eq, Generic)
 
--- | Why a guard failed.
-data GuardFailure
-  = -- | A required fact was not found and cannot be established
-    FactNotEstablished Text
+-- | A specific reason why a guard branch failed.
+data FailureReason
+  = -- | A required fact was not found
+    MissingFact Text
   | -- | A forbidden fact was present
-    ForbiddenFactPresent Text
+    ForbiddenFact Text
   | -- | Policy explicitly denied with reason
-    PolicyDenied Text
+    ExplicitDenial Text
+  | -- | A query was attempted but failed
+    QueryFailed Text Text -- ^ Tool name, error message
+  deriving stock (Show, Eq, Generic)
+
+-- | Why a guard failed - collects all failure reasons.
+data GuardFailure = GuardFailure
+  { -- | All reasons collected during guard evaluation
+    reasons :: [FailureReason]
+  }
   deriving stock (Show, Eq, Generic)
 
 -- | Result of guard evaluation.
@@ -104,7 +119,9 @@ data GuardState fact = GuardState
     -- | Queries that could be run to establish missing facts
     pendingQueries :: [PendingQuery],
     -- | Questions that could be asked if queries don't work
-    pendingQuestions :: [UserQuestion]
+    pendingQuestions :: [UserQuestion],
+    -- | All failure reasons encountered during evaluation
+    failureReasons :: [FailureReason]
   }
   deriving stock (Generic)
 
@@ -128,7 +145,8 @@ runGuard facts guardAction = do
         GuardState
           { currentFacts = facts,
             pendingQueries = [],
-            pendingQuestions = []
+            pendingQuestions = [],
+            failureReasons = []
           }
   runStateT (observeAllT guardAction) initialState
 
@@ -148,45 +166,56 @@ evaluateGuard facts guardAction = do
       (q : qs) -> NeedsResolution (RunQueries (q :| qs))
       [] -> case finalState.pendingQuestions of
         (question : _) -> NeedsResolution (AskUser question)
-        [] -> GuardDenied (FactNotEstablished "Guard failed with no resolution path")
+        [] -> GuardDenied (GuardFailure finalState.failureReasons)
 
 --------------------------------------------------------------------------------
 -- Guard Primitives
 --------------------------------------------------------------------------------
 
+-- | Record a failure reason and fail the branch.
+failWith :: FailureReason -> GuardM fact a
+failWith reason = do
+  #failureReasons %= (reason :)
+  empty
+
 -- | Require a specific fact to be present.
--- If the fact is missing, the guard branch fails (enabling backtracking).
-requireFact :: (Ord fact) => fact -> GuardM fact ()
+-- If the fact is missing, records the reason and fails the branch.
+requireFact :: (Ord fact, Show fact) => fact -> GuardM fact ()
 requireFact fact = do
   facts <- use (#currentFacts)
-  guard (Facts.hasFact fact facts)
+  unless (Facts.hasFact fact facts) do
+    failWith (MissingFact $ "Required: " <> tshow fact)
 
 -- | Require a fact matching a predicate to be present.
 -- Returns the matching fact if found.
-requireFactMatching :: (fact -> Bool) -> GuardM fact fact
-requireFactMatching predicate = do
+requireFactMatching :: Text -> (fact -> Bool) -> GuardM fact fact
+requireFactMatching description predicate = do
   facts <- use (#currentFacts)
   case Facts.queryFacts predicate facts of
     (f : _) -> pure f
-    [] -> empty
+    [] -> failWith (MissingFact description)
 
 -- | Forbid a specific fact from being present.
--- If the fact is present, the guard branch fails.
-forbidFact :: (Ord fact) => fact -> GuardM fact ()
+-- If the fact is present, records the reason and fails the branch.
+forbidFact :: (Ord fact, Show fact) => fact -> GuardM fact ()
 forbidFact fact = do
   facts <- use (#currentFacts)
-  guard (not (Facts.hasFact fact facts))
+  when (Facts.hasFact fact facts) do
+    failWith (ForbiddenFact $ "Forbidden: " <> tshow fact)
 
 -- | Forbid any fact matching a predicate.
--- If a matching fact is present, the guard branch fails.
-forbidFactMatching :: (fact -> Bool) -> GuardM fact ()
-forbidFactMatching predicate = do
+-- If a matching fact is present, records the reason and fails the branch.
+forbidFactMatching :: (Show fact) => Text -> (fact -> Bool) -> GuardM fact ()
+forbidFactMatching description predicate = do
   facts <- use (#currentFacts)
-  guard (null (Facts.queryFacts predicate facts))
+  case Facts.queryFacts predicate facts of
+    (f : _) -> failWith (ForbiddenFact $ description <> ": " <> tshow f)
+    [] -> pure ()
 
 -- | Explicitly deny with a reason. This always fails the guard.
+-- The reason is recorded and will be included in the guard failure message.
 denyWith :: Text -> GuardM fact a
-denyWith _reason = empty
+denyWith reason = failWith (ExplicitDenial reason)
 
 -- | Get all current facts.
 getFacts :: GuardM fact (FactsDB fact)

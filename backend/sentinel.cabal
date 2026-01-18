@@ -15,6 +15,7 @@ library
       Examples.AirCanada.Facts
       Examples.AirCanada.MockDB
       Examples.AirCanada.Refund
+      Examples.AirCanada.Sentinel
       Examples.AirCanada.Tools
       Examples.AirCanada.Types
       Pre
@@ -25,6 +26,7 @@ library
       Sentinel.Output
       Sentinel.Pretty
       Sentinel.Schema
+      Sentinel.Sentinel
       Sentinel.Tool
   other-modules:
       Paths_sentinel
