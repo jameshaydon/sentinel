@@ -26,6 +26,16 @@ module Sentinel.Sentinel
     addFacts,
     getFacts,
 
+    -- * Context Operations
+    getContextValue,
+    setContextValue,
+    getContextStore,
+
+    -- * Askable Fact Operations
+    getAskableFact,
+    setAskableFact,
+    getAskableStore,
+
     -- * Database Access
     getDb,
     modifyDb,
@@ -37,9 +47,13 @@ where
 
 import Data.Aeson (Value)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
+import Data.Time (getCurrentTime)
 import Pre
-import Sentinel.Facts (FactsDB)
+import Sentinel.Context (ContextEstablishment (..), ContextStore, EstablishmentMethod (..), emptyContextStore)
+import Sentinel.Context qualified as Context
+import Sentinel.Facts (AskableFactStore, BaseFactStore, emptyAskableFactStore)
 import Sentinel.Facts qualified as Facts
+import Sentinel.Solver.Types (BaseFact, Scalar)
 
 --------------------------------------------------------------------------------
 -- User Questions
@@ -76,26 +90,33 @@ data SentinelResult
 
 -- | The Sentinel's environment, containing mutable state.
 --
--- This is parameterized over:
--- - @db@: The database type (e.g., AirlineDB)
--- - @fact@: The fact type (e.g., AirCanada.Fact)
-data SentinelEnv db fact = SentinelEnv
+-- Parameterized over @db@: The database type (e.g., AirlineDB).
+-- Facts are stored as 'BaseFact' in a 'BaseFactStore'.
+data SentinelEnv db = SentinelEnv
   { -- | The database (mutable for potential updates)
     db :: IORef db,
-    -- | The facts database (accumulated knowledge)
-    facts :: IORef (FactsDB fact)
+    -- | The facts database (accumulated knowledge as BaseFacts)
+    facts :: IORef BaseFactStore,
+    -- | The context store (context variables like booking_of_interest)
+    contextStore :: IORef ContextStore,
+    -- | The askable fact store (user confirmations)
+    askableStore :: IORef AskableFactStore
   }
   deriving stock (Generic)
 
 -- | Create a new Sentinel environment with initial database and facts.
-newSentinelEnv :: db -> FactsDB fact -> IO (SentinelEnv db fact)
+newSentinelEnv :: db -> BaseFactStore -> IO (SentinelEnv db)
 newSentinelEnv initialDb initialFacts = do
   dbRef <- newIORef initialDb
   factsRef <- newIORef initialFacts
+  contextRef <- newIORef emptyContextStore
+  askableRef <- newIORef emptyAskableFactStore
   pure
     SentinelEnv
       { db = dbRef,
-        facts = factsRef
+        facts = factsRef,
+        contextStore = contextRef,
+        askableStore = askableRef
       }
 
 --------------------------------------------------------------------------------
@@ -108,10 +129,10 @@ newSentinelEnv initialDb initialFacts = do
 -- - The database (via IORef)
 -- - The facts database (via IORef)
 -- - IO for executing tools
-type SentinelM db fact = ReaderT (SentinelEnv db fact) IO
+type SentinelM db = ReaderT (SentinelEnv db) IO
 
 -- | Run a Sentinel computation.
-runSentinelM :: SentinelEnv db fact -> SentinelM db fact a -> IO a
+runSentinelM :: SentinelEnv db -> SentinelM db a -> IO a
 runSentinelM env action = runReaderT action env
 
 --------------------------------------------------------------------------------
@@ -130,7 +151,7 @@ runSentinelM env action = runReaderT action env
 -- sentinel <- airCanadaSentinel config
 -- result <- runSentinelM env (sentinel.guardedCall "InitiateRefund" args)
 -- @
-data Sentinel db fact = Sentinel
+data Sentinel db = Sentinel
   { -- | Guard a tool call, returning the result or asking for user input.
     --
     -- This is the main entry point for the agent. It:
@@ -139,9 +160,9 @@ data Sentinel db fact = Sentinel
     -- 3. If guard allows, executes the tool and returns 'Allowed'
     -- 4. If guard denies, returns 'Denied'
     -- 5. If guard needs user input, returns 'AskUser'
-    guardedCall :: Text -> Value -> SentinelM db fact SentinelResult,
+    guardedCall :: Text -> Value -> SentinelM db SentinelResult,
     -- | Get a summary of current facts for the LLM context.
-    summarizeFacts :: SentinelM db fact Text
+    summarizeFacts :: SentinelM db Text
   }
 
 --------------------------------------------------------------------------------
@@ -149,19 +170,19 @@ data Sentinel db fact = Sentinel
 --------------------------------------------------------------------------------
 
 -- | Add a single fact to the Sentinel's fact store.
-addFact :: (Ord fact) => fact -> SentinelM db fact ()
+addFact :: BaseFact -> SentinelM db ()
 addFact fact = do
   factsRef <- asks (.facts)
-  liftIO $ modifyIORef' factsRef (Facts.addFact fact)
+  liftIO $ modifyIORef' factsRef (Facts.addBaseFact fact)
 
 -- | Add multiple facts to the Sentinel's fact store.
-addFacts :: (Ord fact) => [fact] -> SentinelM db fact ()
+addFacts :: [BaseFact] -> SentinelM db ()
 addFacts newFacts = do
   factsRef <- asks (.facts)
-  liftIO $ modifyIORef' factsRef (Facts.addFacts newFacts)
+  liftIO $ modifyIORef' factsRef (Facts.addBaseFacts newFacts)
 
 -- | Get the current facts database.
-getFacts :: SentinelM db fact (FactsDB fact)
+getFacts :: SentinelM db BaseFactStore
 getFacts = do
   factsRef <- asks (.facts)
   liftIO $ readIORef factsRef
@@ -171,13 +192,66 @@ getFacts = do
 --------------------------------------------------------------------------------
 
 -- | Get the current database state.
-getDb :: SentinelM db fact db
+getDb :: SentinelM db db
 getDb = do
   dbRef <- asks (.db)
   liftIO $ readIORef dbRef
 
 -- | Modify the database state.
-modifyDb :: (db -> db) -> SentinelM db fact ()
+modifyDb :: (db -> db) -> SentinelM db ()
 modifyDb f = do
   dbRef <- asks (.db)
   liftIO $ modifyIORef' dbRef f
+
+--------------------------------------------------------------------------------
+-- Context Operations
+--------------------------------------------------------------------------------
+
+-- | Get the value of a context variable.
+getContextValue :: Text -> SentinelM db (Maybe Scalar)
+getContextValue slot = do
+  ctxRef <- asks (.contextStore)
+  store <- liftIO $ readIORef ctxRef
+  pure $ Context.getContext slot store
+
+-- | Set a context variable with a value (from user selection).
+setContextValue :: Text -> Scalar -> [Scalar] -> SentinelM db ()
+setContextValue slot value candidates = do
+  ctxRef <- asks (.contextStore)
+  timestamp <- liftIO getCurrentTime
+  let establishment =
+        ContextEstablishment
+          { value = value,
+            establishedVia = UserSelection candidates,
+            timestamp = timestamp
+          }
+  liftIO $ modifyIORef' ctxRef (Context.setContext slot establishment)
+
+-- | Get the entire context store (for solver).
+getContextStore :: SentinelM db ContextStore
+getContextStore = do
+  ctxRef <- asks (.contextStore)
+  liftIO $ readIORef ctxRef
+
+--------------------------------------------------------------------------------
+-- Askable Fact Operations
+--------------------------------------------------------------------------------
+
+-- | Check if an askable fact has been confirmed.
+getAskableFact :: Text -> [Scalar] -> SentinelM db (Maybe Bool)
+getAskableFact predName args = do
+  askRef <- asks (.askableStore)
+  store <- liftIO $ readIORef askRef
+  pure $ Facts.lookupAskableFact predName args store
+
+-- | Record a user confirmation for an askable predicate.
+setAskableFact :: Text -> [Scalar] -> Bool -> SentinelM db ()
+setAskableFact predName args confirmed = do
+  askRef <- asks (.askableStore)
+  liftIO $ modifyIORef' askRef (Facts.addAskableFact predName args confirmed)
+
+-- | Get the entire askable fact store (for solver).
+getAskableStore :: SentinelM db AskableFactStore
+getAskableStore = do
+  askRef <- asks (.askableStore)
+  liftIO $ readIORef askRef

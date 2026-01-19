@@ -19,6 +19,10 @@ module Examples.AirCanada.Tools
 
     -- * Helpers
     extractString,
+
+    -- * Fact Production (exported for tests)
+    bookingToFacts,
+    flightToFacts,
   )
 where
 
@@ -26,15 +30,16 @@ import Data.Aeson qualified as Aeson
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Text qualified as T
-import Examples.AirCanada.Facts qualified as Facts
 import Examples.AirCanada.MockDB (attemptRefund, getBooking, getFlight, listBookingsForPassenger)
-import Examples.AirCanada.Refund (BookingSource (..), DeathCircumstance (..), SpecialException (..))
+import Examples.AirCanada.Refund (DeathCircumstance (..), SpecialException (..))
+import Examples.AirCanada.ToolBindings (airCanadaToolBindings)
 import Examples.AirCanada.Types
 import Pre
-import Sentinel.Guard qualified as Guard
 import Sentinel.Schema qualified as Schema
 import Sentinel.Sentinel (getDb, modifyDb)
-import Sentinel.Tool (Tool (..), ToolCategory (..), ToolOutput (..))
+import Sentinel.Solver.Combinators (SolverM, failWith, oneOf, queryPredicate)
+import Sentinel.Solver.Types (BaseFact (..), Proof (..), Scalar (..))
+import Sentinel.Tool (Guard, Tool (..), ToolCategory (..), ToolGuard (..), ToolOutput (..))
 import Sentinel.Toolkit (Toolkit (..))
 
 --------------------------------------------------------------------------------
@@ -42,7 +47,7 @@ import Sentinel.Toolkit (Toolkit (..))
 --------------------------------------------------------------------------------
 
 -- | The Air Canada toolkit with all tools and system prompt.
-airCanadaToolkit :: Toolkit AirlineDB Facts.Fact
+airCanadaToolkit :: Toolkit AirlineDB
 airCanadaToolkit =
   Toolkit
     { tools =
@@ -52,7 +57,8 @@ airCanadaToolkit =
           searchBookingsTool,
           processRefundTool
         ],
-      systemPrompt = airCanadaSystemPrompt
+      systemPrompt = airCanadaSystemPrompt,
+      toolBindings = airCanadaToolBindings
     }
 
 --------------------------------------------------------------------------------
@@ -80,7 +86,7 @@ airCanadaSystemPrompt =
 --------------------------------------------------------------------------------
 
 -- | Login tool - establishes user identity.
-loginTool :: Tool AirlineDB Facts.Fact
+loginTool :: Tool AirlineDB
 loginTool =
   Tool
     { name = "Login",
@@ -90,18 +96,18 @@ loginTool =
           [("userName", Schema.stringProp "The user's full name")]
           ["userName"],
       category = ActionTool, -- Login is an action, not auto-invoked
-      guard = \_ -> pure (), -- No guard for login - always allowed
+      guard = NoGuard, -- No guard for login - always allowed
       execute = \args -> do
         userName <- extractString "userName" args ??: "Missing or invalid 'userName' parameter"
         pure
           ToolOutput
             { observation = "Successfully logged in as: " <> userName,
-              producedFacts = [Facts.LoggedInUser userName]
+              producedFacts = [BaseFact "logged_in_user" [ScStr userName]]
             }
     }
 
 -- | Retrieve booking tool - looks up booking details.
-retrieveBookingTool :: Tool AirlineDB Facts.Fact
+retrieveBookingTool :: Tool AirlineDB
 retrieveBookingTool =
   Tool
     { name = "RetrieveBooking",
@@ -111,7 +117,7 @@ retrieveBookingTool =
           [("bookingRef", Schema.stringProp "The 6-character booking reference (e.g., REF123)")]
           ["bookingRef"],
       category = DataTool,
-      guard = userIdentityGuard,
+      guard = SolverGuardT "user_identity" userIdentityGuard,
       execute = \args -> do
         ref <- extractString "bookingRef" args ??: "Missing or invalid 'bookingRef' parameter"
         db <- lift getDb
@@ -126,7 +132,7 @@ retrieveBookingTool =
     }
 
 -- | Check flight status tool.
-checkFlightTool :: Tool AirlineDB Facts.Fact
+checkFlightTool :: Tool AirlineDB
 checkFlightTool =
   Tool
     { name = "CheckFlightStatus",
@@ -136,7 +142,7 @@ checkFlightTool =
           [("flightNumber", Schema.stringProp "The flight number (e.g., AC101)")]
           ["flightNumber"],
       category = DataTool,
-      guard = userIdentityGuard,
+      guard = SolverGuardT "user_identity" userIdentityGuard,
       execute = \args -> do
         flightNum <- extractString "flightNumber" args ??: "Missing or invalid 'flightNumber' parameter"
         db <- lift getDb
@@ -151,7 +157,7 @@ checkFlightTool =
     }
 
 -- | Search bookings by passenger name tool.
-searchBookingsTool :: Tool AirlineDB Facts.Fact
+searchBookingsTool :: Tool AirlineDB
 searchBookingsTool =
   Tool
     { name = "SearchBookingsByName",
@@ -161,7 +167,7 @@ searchBookingsTool =
           [("passengerName", Schema.stringProp "The passenger's full name")]
           ["passengerName"],
       category = DataTool,
-      guard = searchBookingsGuard,
+      guard = SolverGuardT "search_bookings" searchBookingsGuard,
       execute = \args -> do
         name <- extractString "passengerName" args ??: "Missing or invalid 'passengerName' parameter"
         db <- lift getDb
@@ -182,7 +188,7 @@ searchBookingsTool =
     }
 
 -- | Process refund tool.
-processRefundTool :: Tool AirlineDB Facts.Fact
+processRefundTool :: Tool AirlineDB
 processRefundTool =
   Tool
     { name = "InitiateRefund",
@@ -197,7 +203,7 @@ processRefundTool =
           ]
           ["bookingRef"],
       category = ActionTool,
-      guard = refundGuard,
+      guard = SolverGuardT "refund_eligibility" refundGuard,
       execute = \args -> do
         ref <- extractString "bookingRef" args ??: "Missing or invalid 'bookingRef' parameter"
         let specialReason = case extractString "reason" args of
@@ -216,93 +222,109 @@ processRefundTool =
     }
 
 --------------------------------------------------------------------------------
--- Guards
+-- Guards (Function-based)
 --------------------------------------------------------------------------------
 
+-- | Helper to extract a scalar value from tool arguments.
+extractArg :: Text -> Aeson.Value -> SolverM Scalar
+extractArg key args = case extractToolArg key args of
+  Just s -> pure s
+  Nothing -> failWith $ "Missing argument: " <> key
+
+-- | Extract a scalar value from JSON tool arguments.
+extractToolArg :: Text -> Aeson.Value -> Maybe Scalar
+extractToolArg key (Aeson.Object obj) =
+  case KeyMap.lookup (Key.fromText key) obj of
+    Just v -> scalarFromJSON v
+    Nothing -> Nothing
+extractToolArg _ _ = Nothing
+
+-- | Try to parse a JSON value as a scalar.
+scalarFromJSON :: Aeson.Value -> Maybe Scalar
+scalarFromJSON = \case
+  Aeson.Bool b -> Just (ScBool b)
+  Aeson.Number n -> Just (ScNum (realToFrac n))
+  Aeson.String t -> Just (ScStr t)
+  _ -> Nothing
+
 -- | Guard that requires user identity to be established.
-userIdentityGuard :: Aeson.Value -> Guard.GuardM AirlineDB Facts.Fact ()
-userIdentityGuard _ = do
-  facts <- Guard.queryFacts \case
-    Facts.LoggedInUser _ -> True
-    _ -> False
-  case facts of
-    (_ : _) -> pure ()
-    [] -> Guard.denyWith "User is not logged in. Use the Login tool to establish user identity first."
+--
+-- Queries the "logged_in_user" predicate to verify a user is logged in.
+userIdentityGuard :: Guard
+userIdentityGuard _args = do
+  fact <- queryPredicate "logged_in_user" []
+  pure $ FactUsed fact
 
 -- | Guard for SearchBookingsByName - requires identity AND name must match logged-in user.
-searchBookingsGuard :: Aeson.Value -> Guard.GuardM AirlineDB Facts.Fact ()
+--
+-- This guard:
+-- 1. Requires a user to be logged in
+-- 2. Verifies the passengerName argument matches the logged-in user
+searchBookingsGuard :: Guard
 searchBookingsGuard args = do
-  -- First check if user is logged in
-  loggedInFacts <- Guard.queryFacts \case
-    Facts.LoggedInUser _ -> True
-    _ -> False
-  case loggedInFacts of
-    [] -> Guard.denyWith "User is not logged in. Use the Login tool to establish user identity first."
-    (loggedInUser : _) -> do
-      -- Extract the logged-in user's name
-      let userName = case loggedInUser of
-            Facts.LoggedInUser name -> name
-            _ -> "" -- Won't happen due to pattern match above
-      -- Verify the passengerName argument matches the logged-in user
-      case extractString "passengerName" args of
-        Nothing -> Guard.denyWith "Missing passengerName parameter"
-        Just name
-          | T.toUpper name == T.toUpper userName -> pure ()
-          | otherwise -> Guard.denyWith "Can only search bookings for yourself"
+  name <- extractArg "passengerName" args
+  fact <- queryPredicate "logged_in_user" [name]
+  pure $ FactUsed fact
 
 -- | Guard for refund tool.
--- Requires: booking must exist in facts (auto-fetches if needed)
--- Forbids: booking from travel agency or other airline
-refundGuard :: Aeson.Value -> Guard.GuardM AirlineDB Facts.Fact ()
+--
+-- Requires:
+-- - User identity established
+-- - Booking must exist (will be auto-fetched via tool binding)
+-- - Booking source must not be TravelAgency or OtherAirline
+refundGuard :: Guard
 refundGuard args = do
-  -- First require user identity
-  userIdentityGuard args
-
-  -- Extract booking reference from args
-  case extractString "bookingRef" args of
-    Nothing -> Guard.denyWith "Missing or invalid 'bookingRef' parameter"
-    Just ref -> do
-      let normalizedRef = T.toUpper ref
-      -- Try to establish that booking exists
-      -- If not present, execute RetrieveBooking to fetch it
-      Guard.establishFact
-        (Facts.BookingExists normalizedRef)
-        "RetrieveBooking"
-        (Aeson.object [("bookingRef", Aeson.String ref)])
-
-      -- Forbid bookings from travel agencies (we can't process those)
-      Guard.forbidFactMatching "Booking is from a travel agency (cannot process refunds)" \case
-        Facts.BookingSource bRef TravelAgency -> bRef == normalizedRef
-        _ -> False
-
-      -- Forbid bookings from other airlines (we can't process those)
-      Guard.forbidFactMatching "Booking is from another airline (cannot process refunds)" \case
-        Facts.BookingSource bRef OtherAirline -> bRef == normalizedRef
-        _ -> False
+  bookingRef <- extractArg "bookingRef" args
+  -- Require user identity
+  _ <- queryPredicate "logged_in_user" []
+  -- Booking must exist (auto-fetched via tool binding)
+  _ <- queryPredicate "booking_passenger" [bookingRef]
+  -- Booking source must be acceptable (not from travel agency or other airline)
+  oneOf
+    [ do
+        fact <- queryPredicate "booking_source" [bookingRef, ScStr "DirectAirCanada"]
+        pure $ FactUsed fact,
+      do
+        fact <- queryPredicate "booking_source" [bookingRef, ScStr "GroupBooking"]
+        pure $ FactUsed fact
+    ]
 
 --------------------------------------------------------------------------------
 -- Fact Production
 --------------------------------------------------------------------------------
 
--- | Convert a booking to its constituent facts.
-bookingToFacts :: Booking -> [Facts.Fact]
+-- | Convert a booking to its constituent BaseFacts.
+--
+-- Produces facts matching the predicates defined in ToolBindings:
+-- - booking_passenger(BookingRef, PassengerName)
+-- - booking_flight(BookingRef, FlightNo)
+-- - booking_status(BookingRef, Status)
+-- - booking_source(BookingRef, Source)
+-- - booking_ticket_type(BookingRef, TicketType)
+-- - booking_amount(BookingRef, PriceCents)
+-- - booking_fare_class(BookingRef, TicketClass)
+bookingToFacts :: Booking -> [BaseFact]
 bookingToFacts b =
-  [ Facts.BookingExists b.bookingRef,
-    Facts.BookingPassenger b.bookingRef b.passengerName,
-    Facts.BookingFlight b.bookingRef b.flightNo,
-    Facts.BookingStatus b.bookingRef b.bookingStatus,
-    Facts.BookingSource b.bookingRef b.ticketDetails.bookingSource,
-    Facts.BookingTicketType b.bookingRef b.ticketDetails.ticketType,
-    Facts.BookingPriceCents b.bookingRef b.priceCents,
-    Facts.BookingTicketClass b.bookingRef b.ticketClass
+  [ BaseFact "booking_passenger" [ScStr b.bookingRef, ScStr b.passengerName],
+    BaseFact "booking_flight" [ScStr b.bookingRef, ScStr b.flightNo],
+    BaseFact "booking_status" [ScStr b.bookingRef, ScStr (T.pack $ show b.bookingStatus)],
+    BaseFact "booking_source" [ScStr b.bookingRef, ScStr (T.pack $ show b.ticketDetails.bookingSource)],
+    BaseFact "booking_ticket_type" [ScStr b.bookingRef, ScStr (T.pack $ show b.ticketDetails.ticketType)],
+    BaseFact "booking_amount" [ScStr b.bookingRef, ScNum (fromIntegral b.priceCents)],
+    BaseFact "booking_fare_class" [ScStr b.bookingRef, ScStr b.ticketClass]
   ]
 
--- | Convert a flight to its constituent facts.
-flightToFacts :: Flight -> [Facts.Fact]
+-- | Convert a flight to its constituent BaseFacts.
+--
+-- Produces facts matching the predicates defined in ToolBindings:
+-- - flight_status(FlightNumber, Status)
+-- - flight_origin(FlightNumber, Origin)
+-- - flight_destination(FlightNumber, Destination)
+flightToFacts :: Flight -> [BaseFact]
 flightToFacts f =
-  [ Facts.FlightExists f.flightNumber,
-    Facts.FlightStatusFact f.flightNumber f.status,
-    Facts.FlightRoute f.flightNumber f.origin f.destination
+  [ BaseFact "flight_status" [ScStr f.flightNumber, ScStr (T.pack $ show f.status)],
+    BaseFact "flight_origin" [ScStr f.flightNumber, ScStr f.origin],
+    BaseFact "flight_destination" [ScStr f.flightNumber, ScStr f.destination]
   ]
 
 --------------------------------------------------------------------------------

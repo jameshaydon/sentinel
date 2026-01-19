@@ -24,6 +24,9 @@ import Sentinel.Sentinel (Sentinel, SentinelEnv, SentinelResult (..))
 import Sentinel.Sentinel qualified as Sentinel
 import Sentinel.Tool qualified as Tool
 
+-- Note: fact type parameter has been removed from Sentinel types.
+-- All facts are now stored as BaseFact in BaseFactStore.
+
 --------------------------------------------------------------------------------
 -- Configuration
 --------------------------------------------------------------------------------
@@ -60,21 +63,21 @@ data AgentState = AgentState
   }
   deriving stock (Generic)
 
-type AgentM db fact = ReaderT (AgentEnv db fact) (StateT AgentState IO)
+type AgentM db = ReaderT (AgentEnv db) (StateT AgentState IO)
 
-data AgentEnv db fact = AgentEnv
+data AgentEnv db = AgentEnv
   { config :: AgentConfig,
     -- | Tool definitions for LLM (schemas and descriptions).
     tools :: [Tool.LLMTool],
     -- | System prompt for the LLM.
     systemPrompt :: Text,
     -- | Sentinel for guarded tool calls.
-    sentinel :: Sentinel db fact,
+    sentinel :: Sentinel db,
     -- | Sentinel environment (shared state for db and facts).
-    sentinelEnv :: SentinelEnv db fact
+    sentinelEnv :: SentinelEnv db
   }
 
-runAgentM :: AgentEnv db fact -> AgentState -> AgentM db fact a -> IO (a, AgentState)
+runAgentM :: AgentEnv db -> AgentState -> AgentM db a -> IO (a, AgentState)
 runAgentM env initialState action =
   runStateT (runReaderT action env) initialState
 
@@ -91,7 +94,7 @@ trimHistory maxMsgs = take maxMsgs
 -- LLM API
 --------------------------------------------------------------------------------
 
-callLLM :: [LLM.Tool] -> AgentM db fact (Either Text (Chat.Message Text))
+callLLM :: [LLM.Tool] -> AgentM db (Either Text (Chat.Message Text))
 callLLM llmTools = do
   env <- ask
   msgs <- use #messages
@@ -105,7 +108,7 @@ callLLM llmTools = do
 --------------------------------------------------------------------------------
 
 -- | Process a single tool call via Sentinel and return the result message.
-processToolCall :: ToolCall.ToolCall -> AgentM db fact Message
+processToolCall :: ToolCall.ToolCall -> AgentM db Message
 processToolCall (ToolCall.ToolCall_Function {id = callId, function = fn}) = do
   env <- ask
   let toolName = fn.name
@@ -128,9 +131,22 @@ processToolCall (ToolCall.ToolCall_Function {id = callId, function = fn}) = do
         Denied reason -> do
           pure $ ToolMsg callId ("ERROR: " <> reason)
         AskUser question -> do
-          -- For now, return the question as an error - the agent should ask the user
-          -- TODO: In Phase 5, this should trigger a user interaction flow
-          pure $ ToolMsg callId ("NEED USER INPUT: " <> question.questionText)
+          -- Return the question to the LLM so it can ask the user.
+          -- The LLM should:
+          -- 1. Ask the user the question
+          -- 2. Based on the response, call EstablishContext or EstablishAskable
+          -- 3. Retry the original tool call
+          pure $
+            ToolMsg callId $
+              "ACTION REQUIRED: I need more information before I can proceed.\n"
+                <> "Question: "
+                <> question.questionText
+                <> "\n"
+                <> "Context: "
+                <> question.factDescription
+                <> "\n"
+                <> "Please ask the user this question, then use the appropriate tool "
+                <> "(EstablishContext or EstablishAskable) to record their response."
 
 --------------------------------------------------------------------------------
 -- Main Agent Loop
@@ -155,8 +171,8 @@ runAgent ::
   AgentConfig ->
   [Tool.LLMTool] ->
   Text ->
-  Sentinel db fact ->
-  SentinelEnv db fact ->
+  Sentinel db ->
+  SentinelEnv db ->
   [Message] ->
   Int ->
   Text ->
@@ -181,7 +197,7 @@ runAgent config tools systemPrompt sentinel sentinelEnv history turnCount userQu
   (response, finalState) <- runAgentM env initialState agentLoop
   pure (response, finalState.messages, finalState.turnCount)
 
-agentLoop :: AgentM db fact Text
+agentLoop :: AgentM db Text
 agentLoop = do
   env <- ask
   iteration <- use #iterationCount
@@ -204,7 +220,7 @@ agentLoop = do
         Right msg ->
           handleResponse msg
 
-handleResponse :: Chat.Message Text -> AgentM db fact Text
+handleResponse :: Chat.Message Text -> AgentM db Text
 handleResponse msg = case msg of
   Chat.Assistant {assistant_content, tool_calls} ->
     case tool_calls of

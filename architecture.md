@@ -132,3 +132,7 @@ Sentinel:
 - **All tool calls are guarded**: Including solver's own tool calls during proof. Note that direct tool calls by the LLM may be allowed (and contain literals), depending on the registered guard. In a stricted mode, all tool calls must go through sentinel, and be purely symbolic.
 - **Solver is stateless**: At the end of a turn, the solver does not store a continuation, even if it returns with "ask this askable datum from the user". Indeed the conversation may just take another path completely. If the user does provide the data, and this is added to the fact store, it is the LLM agent's role to re-invoke the solver (via re-invoking the tool, for example). The solver will not be blocked (or blocked differently) the second time around.
 - **Tools before questions**: The solver should exhaust tool usage in its backtracking, before resorting to asking questions of the user.
+
+## TODO
+
+- We need to think about, or guard against, infinite loops.

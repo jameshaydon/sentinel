@@ -2,7 +2,6 @@ module Main (main) where
 
 import Control.Monad.IO.Class (liftIO)
 import Data.Text qualified as T
-import Examples.AirCanada.Facts qualified as AirCanada
 import Examples.AirCanada.MockDB (initialDB)
 import Examples.AirCanada.Sentinel (airCanadaSentinel)
 import Examples.AirCanada.Tools (airCanadaToolkit)
@@ -87,7 +86,7 @@ main = do
           systemPrompt = toolkit.systemPrompt
           sentinel = airCanadaSentinel
           db = initialDB
-          initialFacts = Facts.emptyFacts
+          initialFacts = Facts.emptyBaseFactStore
 
       -- Create the Sentinel environment with shared state
       sentinelEnv <- newSentinelEnv db initialFacts
@@ -101,8 +100,8 @@ repl ::
   AgentConfig ->
   [LLMTool] ->
   T.Text ->
-  Sentinel AirlineDB AirCanada.Fact ->
-  SentinelEnv AirlineDB AirCanada.Fact ->
+  Sentinel AirlineDB ->
+  SentinelEnv AirlineDB ->
   [Message] ->
   Int ->
   IO ()

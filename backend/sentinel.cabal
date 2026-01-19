@@ -12,21 +12,30 @@ build-type:     Simple
 
 library
   exposed-modules:
-      Examples.AirCanada.Facts
+      Examples.AirCanada.Askables
+      Examples.AirCanada.ContextDecls
       Examples.AirCanada.MockDB
+      Examples.AirCanada.Queries
       Examples.AirCanada.Refund
+      Examples.AirCanada.Rules
       Examples.AirCanada.Sentinel
+      Examples.AirCanada.ToolBindings
       Examples.AirCanada.Tools
       Examples.AirCanada.Types
       Pre
       Sentinel.Agent
+      Sentinel.Context
       Sentinel.Facts
-      Sentinel.Guard
       Sentinel.LLM
       Sentinel.Output
       Sentinel.Pretty
       Sentinel.Schema
       Sentinel.Sentinel
+      Sentinel.Solver
+      Sentinel.Solver.Askable
+      Sentinel.Solver.Combinators
+      Sentinel.Solver.ToolBindings
+      Sentinel.Solver.Types
       Sentinel.Tool
       Sentinel.Toolkit
   other-modules:
