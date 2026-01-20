@@ -3,7 +3,6 @@ module Sentinel.Schema
   ( objectSchema,
     stringProp,
     enumProp,
-    objectProp,
   )
 where
 
@@ -43,13 +42,5 @@ enumProp values desc =
   Aeson.object
     [ "type" .= ("string" :: Text),
       "enum" .= values,
-      "description" .= desc
-    ]
-
--- | A nested object property (accepts any object).
-objectProp :: Text -> Aeson.Value
-objectProp desc =
-  Aeson.object
-    [ "type" .= ("object" :: Text),
       "description" .= desc
     ]

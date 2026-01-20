@@ -22,12 +22,10 @@ module Sentinel.Sentinel
     Sentinel (..),
 
     -- * Context Operations
-    getContextValue,
     setContextValue,
     getContextStore,
 
     -- * Askable Fact Operations
-    getAskableFact,
     setAskableFact,
     getAskableStore,
 
@@ -195,13 +193,6 @@ modifyDb f = do
 -- Context Operations
 --------------------------------------------------------------------------------
 
--- | Get the value of a context variable.
-getContextValue :: Text -> SentinelM db (Maybe Scalar)
-getContextValue slot = do
-  ctxRef <- asks (.contextStore)
-  store <- liftIO $ readIORef ctxRef
-  pure $ Context.getContext slot store
-
 -- | Set a context variable with a value (from user selection).
 setContextValue :: Text -> Scalar -> [Scalar] -> SentinelM db ()
 setContextValue slot value candidates = do
@@ -224,13 +215,6 @@ getContextStore = do
 --------------------------------------------------------------------------------
 -- Askable Fact Operations
 --------------------------------------------------------------------------------
-
--- | Check if an askable fact has been confirmed.
-getAskableFact :: Text -> [Scalar] -> SentinelM db (Maybe Bool)
-getAskableFact predName args = do
-  askRef <- asks (.askableStore)
-  store <- liftIO $ readIORef askRef
-  pure $ Facts.lookupAskableFact predName args store
 
 -- | Record a user confirmation for an askable predicate.
 setAskableFact :: Text -> [Scalar] -> Bool -> SentinelM db ()

@@ -10,15 +10,10 @@ module Sentinel.Toolkit
 
     -- * Toolkit Operations
     lookupTool,
-    dataTools,
-    actionTools,
     toLLMTools,
 
     -- * Building a Sentinel from a Toolkit
     toolkitSentinel,
-
-    -- * Helper for tool execution callback
-    makeRunDataTool,
 
     -- * Verification Support
     withVerification,
@@ -83,16 +78,6 @@ lookupTool :: Text -> Toolkit db -> Maybe (Tool db)
 lookupTool toolName toolkit =
   find (\t -> t.name == toolName) toolkit.tools
 
--- | Get all data tools (can be auto-invoked by guards).
-dataTools :: Toolkit db -> [Tool db]
-dataTools toolkit =
-  filter (\t -> t.category == DataTool) toolkit.tools
-
--- | Get all action tools (require explicit LLM invocation).
-actionTools :: Toolkit db -> [Tool db]
-actionTools toolkit =
-  filter (\t -> t.category == ActionTool) toolkit.tools
-
 -- | Convert toolkit to LLM-facing tool metadata.
 toLLMTools :: Toolkit db -> [LLMTool]
 toLLMTools toolkit = toLLMTool <$> toolkit.tools
@@ -100,27 +85,6 @@ toLLMTools toolkit = toLLMTool <$> toolkit.tools
 --------------------------------------------------------------------------------
 -- Building a Sentinel
 --------------------------------------------------------------------------------
-
--- | Create the runDataTool callback.
---
--- This looks up a tool by name and executes it, returning the observation
--- and produced facts.
-makeRunDataTool ::
-  Toolkit db ->
-  Text ->
-  Value ->
-  SentinelM db (Either Text (Text, [BaseFact]))
-makeRunDataTool toolkit toolName args =
-  case lookupTool toolName toolkit of
-    Nothing -> pure $ Left $ "Unknown tool: " <> toolName
-    Just tool
-      | tool.category /= DataTool ->
-          pure $ Left $ "Tool " <> toolName <> " is not a data tool"
-      | otherwise -> do
-          result <- runExceptT (tool.execute args)
-          case result of
-            Left err -> pure $ Left err
-            Right output -> pure $ Right (output.observation, output.producedFacts)
 
 -- | Create a Sentinel from a Toolkit.
 --

@@ -79,7 +79,6 @@ module Sentinel.Solver
 
     -- * Running the Solver
     runSolver,
-    runSolverWith,
   )
 where
 
@@ -132,15 +131,3 @@ runSolver env initState solver = do
                     ]
                   fps -> fps
              in pure (Failure failures, finalState)
-
--- | Run a solver query with explicit initial facts.
---
--- Convenience wrapper that constructs the SolverState from fact stores.
-runSolverWith ::
-  SolverEnv ->
-  BaseFactStore ->
-  AskableFactStore ->
-  SolverM SolverSuccess ->
-  IO (SolverResult, SolverState)
-runSolverWith env baseFacts askableFacts solver =
-  runSolver env (emptySolverState baseFacts askableFacts) solver

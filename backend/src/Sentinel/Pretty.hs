@@ -24,12 +24,9 @@ module Sentinel.Pretty
     styledToolName,
     thinking,
     styledObservation,
-    finalAnswer,
     errorText,
     successText,
-    userText,
     iterationNum,
-    quoted,
     wrappedText,
     dimText,
 
@@ -152,10 +149,6 @@ thinking = styled AnnThinking
 styledObservation :: Doc Ann -> Doc Ann
 styledObservation = styled AnnObservation
 
--- | Style text as a final answer.
-finalAnswer :: Doc Ann -> Doc Ann
-finalAnswer = styled AnnFinalAnswer
-
 -- | Style text as an error.
 errorText :: Doc Ann -> Doc Ann
 errorText = styled AnnError
@@ -164,10 +157,6 @@ errorText = styled AnnError
 successText :: Doc Ann -> Doc Ann
 successText = styled AnnSuccess
 
--- | Style text as user input.
-userText :: Doc Ann -> Doc Ann
-userText = styled AnnUserText
-
 -- | Style text as an iteration number.
 iterationNum :: Doc Ann -> Doc Ann
 iterationNum = styled AnnIterationNum
@@ -175,10 +164,6 @@ iterationNum = styled AnnIterationNum
 -- | Style text as dimmed/secondary.
 dimText :: Doc Ann -> Doc Ann
 dimText = styled AnnDim
-
--- | Wrap a Doc in single quotes for display.
-quoted :: Doc Ann -> Doc Ann
-quoted d = "'" <> d <> "'"
 
 -- | Wrap text respecting line breaks and allowing proper text reflow.
 -- Uses fillSep to wrap words within each line, preserving explicit line breaks.

@@ -43,10 +43,7 @@ module Sentinel.Solver.Combinators
     extractArg,
 
     -- * State Accessors
-    getPendingAskables,
-    getPendingContextBlocks,
     getFailedPaths,
-    getCurrentRule,
   )
 where
 
@@ -420,21 +417,9 @@ failWith msg = do
 -- State Accessors
 --------------------------------------------------------------------------------
 
--- | Get pending askable blocks from solver state.
-getPendingAskables :: SolverState -> [AskableBlock]
-getPendingAskables s = s.pendingAskables
-
--- | Get pending context blocks from solver state.
-getPendingContextBlocks :: SolverState -> [ContextBlock]
-getPendingContextBlocks s = s.pendingContextBlocks
-
 -- | Get failed proof paths from solver state.
 getFailedPaths :: SolverState -> [FailurePath]
 getFailedPaths s = s.failedPaths
-
--- | Get current rule from solver state.
-getCurrentRule :: SolverState -> Maybe Text
-getCurrentRule s = s.currentRule
 
 --------------------------------------------------------------------------------
 -- Tool Argument Extraction
