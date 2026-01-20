@@ -2,7 +2,8 @@
 --
 -- These bindings describe how solver predicates map to AirLogic tools.
 -- When the solver needs to prove a predicate, it uses these bindings to
--- invoke the appropriate tool and extract facts from the result.
+-- invoke the appropriate tool. Facts are produced by the Tool's execute
+-- function via ToolOutput.producedFacts.
 --
 -- === Predicate Naming Convention
 --
@@ -42,7 +43,6 @@ module Examples.AirLogic.ToolBindings
 where
 
 import Pre
-import Sentinel.JSON (extractArrayField, extractBool, extractNumber, extractString)
 import Sentinel.Solver.ToolBindings
   ( ToolBinding (..),
     ToolBindingRegistry,
@@ -50,7 +50,6 @@ import Sentinel.Solver.ToolBindings
     registerBinding,
     singleArgBuilder,
   )
-import Sentinel.Solver.Types (BaseFact (..), Scalar (..))
 
 --------------------------------------------------------------------------------
 -- Registry
@@ -129,13 +128,7 @@ flightStatusBinding =
       inputArity = 1,
       toolName = "GetFlightDetails",
       description = "Get flight operational status",
-      buildArgs = singleArgBuilder "flightId" "flight_status",
-      extractFacts = \inputArgs result ->
-        let flightId = headMay inputArgs
-            status = extractString "status" result
-         in case (flightId, status) of
-              (Just fid, Just s) -> [BaseFact "flight_status" [fid, ScStr s]]
-              _ -> []
+      buildArgs = singleArgBuilder "flightId" "flight_status"
     }
 
 -- | Binding for @flight_delay_minutes(FlightId, Minutes)@.
@@ -148,13 +141,7 @@ flightDelayMinutesBinding =
       inputArity = 1,
       toolName = "GetFlightDetails",
       description = "Get flight delay in minutes",
-      buildArgs = singleArgBuilder "flightId" "flight_delay_minutes",
-      extractFacts = \inputArgs result ->
-        let flightId = headMay inputArgs
-            delay = extractNumber "delayMinutes" result
-         in case (flightId, delay) of
-              (Just fid, Just d) -> [BaseFact "flight_delay_minutes" [fid, ScNum d]]
-              _ -> []
+      buildArgs = singleArgBuilder "flightId" "flight_delay_minutes"
     }
 
 -- | Binding for @flight_departure_airport(FlightId, Airport)@.
@@ -167,13 +154,7 @@ flightDepartureAirportBinding =
       inputArity = 1,
       toolName = "GetFlightDetails",
       description = "Get flight departure airport",
-      buildArgs = singleArgBuilder "flightId" "flight_departure_airport",
-      extractFacts = \inputArgs result ->
-        let flightId = headMay inputArgs
-            airport = extractString "departureAirport" result
-         in case (flightId, airport) of
-              (Just fid, Just a) -> [BaseFact "flight_departure_airport" [fid, ScStr a]]
-              _ -> []
+      buildArgs = singleArgBuilder "flightId" "flight_departure_airport"
     }
 
 -- | Binding for @flight_arrival_airport(FlightId, Airport)@.
@@ -186,13 +167,7 @@ flightArrivalAirportBinding =
       inputArity = 1,
       toolName = "GetFlightDetails",
       description = "Get flight arrival airport",
-      buildArgs = singleArgBuilder "flightId" "flight_arrival_airport",
-      extractFacts = \inputArgs result ->
-        let flightId = headMay inputArgs
-            airport = extractString "arrivalAirport" result
-         in case (flightId, airport) of
-              (Just fid, Just a) -> [BaseFact "flight_arrival_airport" [fid, ScStr a]]
-              _ -> []
+      buildArgs = singleArgBuilder "flightId" "flight_arrival_airport"
     }
 
 --------------------------------------------------------------------------------
@@ -210,13 +185,7 @@ bookingFareClassBinding =
       inputArity = 1,
       toolName = "GetBooking",
       description = "Get booking fare class",
-      buildArgs = singleArgBuilder "bookingId" "booking_fare_class",
-      extractFacts = \inputArgs result ->
-        let bookingId = headMay inputArgs
-            fareClass = extractString "fareClass" result
-         in case (bookingId, fareClass) of
-              (Just bid, Just fc) -> [BaseFact "booking_fare_class" [bid, ScStr fc]]
-              _ -> []
+      buildArgs = singleArgBuilder "bookingId" "booking_fare_class"
     }
 
 -- | Binding for @booking_amount(BookingId, Cents)@.
@@ -229,13 +198,7 @@ bookingAmountBinding =
       inputArity = 1,
       toolName = "GetBooking",
       description = "Get booking amount in cents",
-      buildArgs = singleArgBuilder "bookingId" "booking_amount",
-      extractFacts = \inputArgs result ->
-        let bookingId = headMay inputArgs
-            amount = extractNumber "totalAmountCents" result
-         in case (bookingId, amount) of
-              (Just bid, Just a) -> [BaseFact "booking_amount" [bid, ScNum a]]
-              _ -> []
+      buildArgs = singleArgBuilder "bookingId" "booking_amount"
     }
 
 -- | Binding for @booking_flight(BookingId, FlightId)@.
@@ -248,13 +211,7 @@ bookingFlightBinding =
       inputArity = 1,
       toolName = "GetBooking",
       description = "Get booking's flight ID",
-      buildArgs = singleArgBuilder "bookingId" "booking_flight",
-      extractFacts = \inputArgs result ->
-        let bookingId = headMay inputArgs
-            flightId = extractString "flightId" result
-         in case (bookingId, flightId) of
-              (Just bid, Just fid) -> [BaseFact "booking_flight" [bid, ScStr fid]]
-              _ -> []
+      buildArgs = singleArgBuilder "bookingId" "booking_flight"
     }
 
 -- | Binding for @booking_user(BookingId, UserId)@.
@@ -267,13 +224,7 @@ bookingUserBinding =
       inputArity = 1,
       toolName = "GetBooking",
       description = "Get booking's user ID",
-      buildArgs = singleArgBuilder "bookingId" "booking_user",
-      extractFacts = \inputArgs result ->
-        let bookingId = headMay inputArgs
-            userId = extractString "userId" result
-         in case (bookingId, userId) of
-              (Just bid, Just uid) -> [BaseFact "booking_user" [bid, ScStr uid]]
-              _ -> []
+      buildArgs = singleArgBuilder "bookingId" "booking_user"
     }
 
 -- | Binding for @hours_until_departure(BookingId, Hours)@.
@@ -286,13 +237,7 @@ hoursUntilDepartureBinding =
       inputArity = 1,
       toolName = "GetBooking",
       description = "Get hours until booking's flight departure",
-      buildArgs = singleArgBuilder "bookingId" "hours_until_departure",
-      extractFacts = \inputArgs result ->
-        let bookingId = headMay inputArgs
-            hours = extractNumber "hoursUntilDeparture" result
-         in case (bookingId, hours) of
-              (Just bid, Just h) -> [BaseFact "hours_until_departure" [bid, ScNum h]]
-              _ -> []
+      buildArgs = singleArgBuilder "bookingId" "hours_until_departure"
     }
 
 --------------------------------------------------------------------------------
@@ -309,13 +254,7 @@ isEUAirportBinding =
       inputArity = 1,
       toolName = "GetAirportInfo",
       description = "Check if airport is in EU (for EU261 eligibility)",
-      buildArgs = singleArgBuilder "code" "is_eu_airport",
-      extractFacts = \inputArgs result ->
-        let code = headMay inputArgs
-            isEU = extractBool "isEU" result
-         in case (code, isEU) of
-              (Just c, Just True) -> [BaseFact "is_eu_airport" [c]]
-              _ -> [] -- No fact if not EU or missing data
+      buildArgs = singleArgBuilder "code" "is_eu_airport"
     }
 
 --------------------------------------------------------------------------------
@@ -333,15 +272,7 @@ userBookingsBinding =
       inputArity = 1,
       toolName = "GetUserBookings",
       description = "Get all bookings for a user",
-      buildArgs = singleArgBuilder "userId" "user_bookings",
-      extractFacts = \inputArgs result ->
-        let userId = headMay inputArgs
-            -- Result is an array of bookings; extract bookingId from each
-            bookingIds = extractArrayField "bookingId" result
-         in case userId of
-              Just uid ->
-                [BaseFact "user_bookings" [uid, ScStr bid] | bid <- bookingIds]
-              Nothing -> []
+      buildArgs = singleArgBuilder "userId" "user_bookings"
     }
 
 -- | Binding for @user_loyalty_tier(UserId, Tier)@.
@@ -354,13 +285,7 @@ userLoyaltyTierBinding =
       inputArity = 1,
       toolName = "GetUserProfile",
       description = "Get user's loyalty tier",
-      buildArgs = singleArgBuilder "userId" "user_loyalty_tier",
-      extractFacts = \inputArgs result ->
-        let userId = headMay inputArgs
-            tier = extractString "loyaltyTier" result
-         in case (userId, tier) of
-              (Just uid, Just t) -> [BaseFact "user_loyalty_tier" [uid, ScStr t]]
-              _ -> []
+      buildArgs = singleArgBuilder "userId" "user_loyalty_tier"
     }
 
 --------------------------------------------------------------------------------
@@ -377,13 +302,7 @@ rebookingAllowedBinding =
       inputArity = 1,
       toolName = "GetRebookingPolicy",
       description = "Check if rebooking is allowed for fare class",
-      buildArgs = singleArgBuilder "fareClass" "rebooking_allowed",
-      extractFacts = \inputArgs result ->
-        let fareClass = headMay inputArgs
-            allowed = extractBool "rebookingAllowed" result
-         in case (fareClass, allowed) of
-              (Just fc, Just True) -> [BaseFact "rebooking_allowed" [fc]]
-              _ -> [] -- No fact if not allowed or missing data
+      buildArgs = singleArgBuilder "fareClass" "rebooking_allowed"
     }
 
 -- | Binding for @rebooking_fee(FareClass, Fee)@.
@@ -396,11 +315,5 @@ rebookingFeeBinding =
       inputArity = 1,
       toolName = "GetRebookingPolicy",
       description = "Get rebooking change fee for fare class",
-      buildArgs = singleArgBuilder "fareClass" "rebooking_fee",
-      extractFacts = \inputArgs result ->
-        let fareClass = headMay inputArgs
-            fee = extractNumber "changeFee" result
-         in case (fareClass, fee) of
-              (Just fc, Just f) -> [BaseFact "rebooking_fee" [fc, ScNum f]]
-              _ -> []
+      buildArgs = singleArgBuilder "fareClass" "rebooking_fee"
     }

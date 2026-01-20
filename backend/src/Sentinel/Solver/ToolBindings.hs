@@ -30,7 +30,7 @@ import Data.Aeson qualified as Aeson
 import Data.Map.Strict qualified as M
 import Data.Text qualified as T
 import Pre
-import Sentinel.Solver.Types (BaseFact, Scalar, scalarToJSON)
+import Sentinel.Solver.Types (Scalar, scalarToJSON)
 
 --------------------------------------------------------------------------------
 -- Tool Binding
@@ -42,7 +42,7 @@ import Sentinel.Solver.Types (BaseFact, Scalar, scalarToJSON)
 -- uses the binding to:
 -- 1. Build tool input JSON from the ground (input) arguments
 -- 2. Invoke the named data tool
--- 3. Extract base facts from the tool's JSON output
+-- 3. Facts are produced by the Tool's execute function via ToolOutput.producedFacts
 --
 -- === Input vs Output Arguments
 --
@@ -65,10 +65,6 @@ import Sentinel.Solver.Types (BaseFact, Scalar, scalarToJSON)
 --   , description = "Get flight status from flight number"
 --   , buildArgs = \\[flightId] ->
 --       object ["flightNumber" .= scalarToJSON flightId]
---   , extractFacts = \\[flightId] result ->
---       case result ^? key "status" . _String of
---         Just status -> [BaseFact "flight_status" [flightId, ScStr status]]
---         Nothing -> []
 --   }
 -- @
 data ToolBinding = ToolBinding
@@ -83,11 +79,7 @@ data ToolBinding = ToolBinding
     description :: Text,
     -- | Build the JSON input for the tool from ground arguments.
     -- Receives exactly 'inputArity' 'Scalar' values.
-    buildArgs :: [Scalar] -> Value,
-    -- | Extract base facts from the tool's JSON output.
-    -- Receives the same input arguments plus the tool result.
-    -- May return multiple facts (a tool call can establish related facts).
-    extractFacts :: [Scalar] -> Value -> [BaseFact]
+    buildArgs :: [Scalar] -> Value
   }
 
 instance Show ToolBinding where

@@ -2,7 +2,8 @@
 --
 -- These bindings describe how solver predicates map to Air Canada tools.
 -- When the solver needs to prove a predicate, it uses these bindings to
--- invoke the appropriate tool and extract facts from the result.
+-- invoke the appropriate tool. Facts are produced by the Tool's execute
+-- function via ToolOutput.producedFacts.
 --
 -- === Predicate Naming Convention
 --
@@ -30,7 +31,6 @@ module Examples.AirCanada.ToolBindings
 where
 
 import Pre
-import Sentinel.JSON (extractArrayField, extractNestedString, extractNumber, extractString)
 import Sentinel.Solver.ToolBindings
   ( ToolBinding (..),
     ToolBindingRegistry,
@@ -38,7 +38,6 @@ import Sentinel.Solver.ToolBindings
     registerBinding,
     singleArgBuilder,
   )
-import Sentinel.Solver.Types (BaseFact (..), Scalar (..))
 
 --------------------------------------------------------------------------------
 -- Registry
@@ -101,13 +100,7 @@ flightStatusBinding =
       inputArity = 1,
       toolName = "CheckFlightStatus",
       description = "Get flight operational status",
-      buildArgs = singleArgBuilder "flightNumber" "flight_status",
-      extractFacts = \inputArgs result ->
-        let flightId = headMay inputArgs
-            status = extractString "status" result
-         in case (flightId, status) of
-              (Just fid, Just s) -> [BaseFact "flight_status" [fid, ScStr s]]
-              _ -> []
+      buildArgs = singleArgBuilder "flightNumber" "flight_status"
     }
 
 -- | Binding for @flight_origin(FlightId, Airport)@.
@@ -120,13 +113,7 @@ flightOriginBinding =
       inputArity = 1,
       toolName = "CheckFlightStatus",
       description = "Get flight departure airport",
-      buildArgs = singleArgBuilder "flightNumber" "flight_origin",
-      extractFacts = \inputArgs result ->
-        let flightId = headMay inputArgs
-            origin = extractString "origin" result
-         in case (flightId, origin) of
-              (Just fid, Just o) -> [BaseFact "flight_origin" [fid, ScStr o]]
-              _ -> []
+      buildArgs = singleArgBuilder "flightNumber" "flight_origin"
     }
 
 -- | Binding for @flight_destination(FlightId, Airport)@.
@@ -139,13 +126,7 @@ flightDestinationBinding =
       inputArity = 1,
       toolName = "CheckFlightStatus",
       description = "Get flight arrival airport",
-      buildArgs = singleArgBuilder "flightNumber" "flight_destination",
-      extractFacts = \inputArgs result ->
-        let flightId = headMay inputArgs
-            dest = extractString "destination" result
-         in case (flightId, dest) of
-              (Just fid, Just d) -> [BaseFact "flight_destination" [fid, ScStr d]]
-              _ -> []
+      buildArgs = singleArgBuilder "flightNumber" "flight_destination"
     }
 
 --------------------------------------------------------------------------------
@@ -162,13 +143,7 @@ bookingFlightBinding =
       inputArity = 1,
       toolName = "RetrieveBooking",
       description = "Get flight number for a booking",
-      buildArgs = singleArgBuilder "bookingRef" "booking_flight",
-      extractFacts = \inputArgs result ->
-        let bookingId = headMay inputArgs
-            flightNo = extractString "flightNo" result
-         in case (bookingId, flightNo) of
-              (Just bid, Just fno) -> [BaseFact "booking_flight" [bid, ScStr fno]]
-              _ -> []
+      buildArgs = singleArgBuilder "bookingRef" "booking_flight"
     }
 
 -- | Binding for @booking_fare_class(BookingId, Class)@.
@@ -182,13 +157,7 @@ bookingFareClassBinding =
       inputArity = 1,
       toolName = "RetrieveBooking",
       description = "Get ticket class for a booking",
-      buildArgs = singleArgBuilder "bookingRef" "booking_fare_class",
-      extractFacts = \inputArgs result ->
-        let bookingId = headMay inputArgs
-            ticketClass = extractString "ticketClass" result
-         in case (bookingId, ticketClass) of
-              (Just bid, Just tc) -> [BaseFact "booking_fare_class" [bid, ScStr tc]]
-              _ -> []
+      buildArgs = singleArgBuilder "bookingRef" "booking_fare_class"
     }
 
 -- | Binding for @booking_amount(BookingId, Cents)@.
@@ -201,13 +170,7 @@ bookingAmountBinding =
       inputArity = 1,
       toolName = "RetrieveBooking",
       description = "Get booking price in cents",
-      buildArgs = singleArgBuilder "bookingRef" "booking_amount",
-      extractFacts = \inputArgs result ->
-        let bookingId = headMay inputArgs
-            priceCents = extractNumber "priceCents" result
-         in case (bookingId, priceCents) of
-              (Just bid, Just cents) -> [BaseFact "booking_amount" [bid, ScNum cents]]
-              _ -> []
+      buildArgs = singleArgBuilder "bookingRef" "booking_amount"
     }
 
 -- | Binding for @booking_passenger(BookingId, Name)@.
@@ -220,13 +183,7 @@ bookingPassengerBinding =
       inputArity = 1,
       toolName = "RetrieveBooking",
       description = "Get passenger name for a booking",
-      buildArgs = singleArgBuilder "bookingRef" "booking_passenger",
-      extractFacts = \inputArgs result ->
-        let bookingId = headMay inputArgs
-            passenger = extractString "passengerName" result
-         in case (bookingId, passenger) of
-              (Just bid, Just name) -> [BaseFact "booking_passenger" [bid, ScStr name]]
-              _ -> []
+      buildArgs = singleArgBuilder "bookingRef" "booking_passenger"
     }
 
 -- | Binding for @booking_source(BookingId, Source)@.
@@ -240,14 +197,7 @@ bookingSourceBinding =
       inputArity = 1,
       toolName = "RetrieveBooking",
       description = "Get booking source (direct, agency, etc.)",
-      buildArgs = singleArgBuilder "bookingRef" "booking_source",
-      extractFacts = \inputArgs result ->
-        let bookingId = headMay inputArgs
-            -- bookingSource is nested inside ticketDetails
-            source = extractNestedString ["ticketDetails", "bookingSource"] result
-         in case (bookingId, source) of
-              (Just bid, Just s) -> [BaseFact "booking_source" [bid, ScStr s]]
-              _ -> []
+      buildArgs = singleArgBuilder "bookingRef" "booking_source"
     }
 
 -- | Binding for @booking_ticket_type(BookingId, Type)@.
@@ -261,14 +211,7 @@ bookingTicketTypeBinding =
       inputArity = 1,
       toolName = "RetrieveBooking",
       description = "Get ticket type (refundable, non-refundable, etc.)",
-      buildArgs = singleArgBuilder "bookingRef" "booking_ticket_type",
-      extractFacts = \inputArgs result ->
-        let bookingId = headMay inputArgs
-            -- ticketType is nested inside ticketDetails
-            ticketType = extractNestedString ["ticketDetails", "ticketType"] result
-         in case (bookingId, ticketType) of
-              (Just bid, Just tt) -> [BaseFact "booking_ticket_type" [bid, ScStr tt]]
-              _ -> []
+      buildArgs = singleArgBuilder "bookingRef" "booking_ticket_type"
     }
 
 --------------------------------------------------------------------------------
@@ -286,13 +229,5 @@ userBookingsBinding =
       inputArity = 1,
       toolName = "SearchBookingsByName",
       description = "Get all bookings for a user",
-      buildArgs = singleArgBuilder "passengerName" "user_bookings",
-      extractFacts = \inputArgs result ->
-        let userName = headMay inputArgs
-            -- Result is an array of bookings; extract bookingRef from each
-            bookingRefs = extractArrayField "bookingRef" result
-         in case userName of
-              Just uid ->
-                [BaseFact "user_bookings" [uid, ScStr ref] | ref <- bookingRefs]
-              Nothing -> []
+      buildArgs = singleArgBuilder "passengerName" "user_bookings"
     }
