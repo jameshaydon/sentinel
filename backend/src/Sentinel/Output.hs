@@ -28,13 +28,7 @@ data Thinking = Thinking {thought :: Text}
 
 instance Disp Thinking where
   disp (Thinking thought) =
-    nest 4
-      $ vsep
-        [ "",
-          subheader "## Thinking",
-          "",
-          thinking (wrappedText thought)
-        ]
+    section 4 (subheader "## Thinking") (thinking (wrappedText thought))
 
 -- | Agent's final answer to the user
 data FinalAnswer = FinalAnswer {answer :: Text}
@@ -42,11 +36,7 @@ data FinalAnswer = FinalAnswer {answer :: Text}
 
 instance Disp FinalAnswer where
   disp (FinalAnswer _answer) =
-    nest 4
-      $ vsep
-        [ "",
-          subheader "## Final Answer (LLM)"
-        ]
+    sectionNoBody 4 (subheader "## Final Answer (LLM)")
 
 -- | Agent (LLM) using a tool
 data ToolUse = ToolUse
@@ -57,14 +47,7 @@ data ToolUse = ToolUse
 
 instance Disp ToolUse where
   disp (ToolUse tool input) =
-    nest 4
-      $ vsep
-        [ "",
-          subheader "## Tool Use" <+> dimText "(LLM)",
-          "",
-          label "Tool:" <+> styledToolName (pretty tool),
-          label "Input:" <+> dimText (wrappedText input)
-        ]
+    nest 4 $ vsep ["", toolDisplay (subheader "## Tool Use" <+> dimText "(LLM)") tool input]
 
 -- | Result/observation from a tool execution
 data Observation = Observation {result :: Text}
@@ -72,13 +55,7 @@ data Observation = Observation {result :: Text}
 
 instance Disp Observation where
   disp (Observation result) =
-    nest 4
-      $ vsep
-        [ "",
-          subheader "## Result",
-          "",
-          styledObservation (wrappedText result)
-        ]
+    section 4 (subheader "## Result") (styledObservation (wrappedText result))
 
 -- | Error from a tool execution
 data ToolError = ToolError {toolErrorMessage :: Text}
@@ -86,13 +63,7 @@ data ToolError = ToolError {toolErrorMessage :: Text}
 
 instance Disp ToolError where
   disp (ToolError err) =
-    nest 4
-      $ vsep
-        [ "",
-          errorText "## Tool Error",
-          "",
-          errorText (wrappedText err)
-        ]
+    section 4 (errorText "## Tool Error") (errorText (wrappedText err))
 
 -- | Conversational response from the agent (not in ReAct format)
 data Response = Response {message :: Text}
@@ -100,13 +71,7 @@ data Response = Response {message :: Text}
 
 instance Disp Response where
   disp (Response resp) =
-    nest 4
-      $ vsep
-        [ "",
-          subheader "## Response",
-          "",
-          wrappedText resp
-        ]
+    section 4 (subheader "## Response") (wrappedText resp)
 
 -- | Error message
 data Error = Error {errorMessage :: Text}
@@ -114,13 +79,7 @@ data Error = Error {errorMessage :: Text}
 
 instance Disp Error where
   disp (Error err) =
-    nest 4
-      $ vsep
-        [ "",
-          errorText "## Error",
-          "",
-          errorText (label "LLM Error:" <+> wrappedText err)
-        ]
+    section 4 (errorText "## Error") (errorText (label "LLM Error:" <+> wrappedText err))
 
 -- | Iteration header/marker
 data Iteration = Iteration {iterationNumber :: Int}
@@ -128,11 +87,7 @@ data Iteration = Iteration {iterationNumber :: Int}
 
 instance Disp Iteration where
   disp (Iteration n) =
-    nest 2
-      $ vsep
-        [ "",
-          header "# Iteration" <+> iterationNum (pretty n)
-        ]
+    sectionNoBody 2 (header "# Iteration" <+> iterationNum (pretty n))
 
 -- | Turn start marker with turn number and user query
 data TurnStart = TurnStart
@@ -143,10 +98,7 @@ data TurnStart = TurnStart
 
 instance Disp TurnStart where
   disp (TurnStart turn _query) =
-    vsep
-      [ "",
-        header "# Turn" <+> iterationNum (pretty turn)
-      ]
+    sectionNoBody 0 (header "# Turn" <+> iterationNum (pretty turn))
 
 -- | Guard check passed
 data GuardPass = GuardPass
@@ -158,13 +110,8 @@ data GuardPass = GuardPass
 instance Disp GuardPass where
   disp (GuardPass tool proofs) =
     let (firstProof :| _) = proofs
-     in nest 4
-          $ vsep
-            [ "",
-              successText "✓" <+> label "Guard passed for" <+> styledToolName (pretty tool),
-              "",
-              indent 2 (disp firstProof)
-            ]
+        hdr = successText "✓" <+> label "Guard passed for" <+> styledToolName (pretty tool)
+     in section 4 hdr (indent 2 (disp firstProof))
 
 -- | Guard check denied
 data GuardDenied = GuardDenied
@@ -175,13 +122,8 @@ data GuardDenied = GuardDenied
 
 instance Disp GuardDenied where
   disp (GuardDenied tool reason) =
-    nest 4
-      $ vsep
-        [ "",
-          errorText "✗ Guard denied for" <+> styledToolName (pretty tool),
-          "",
-          errorText (wrappedText reason)
-        ]
+    let hdr = errorText "✗ Guard denied for" <+> styledToolName (pretty tool)
+     in section 4 hdr (errorText (wrappedText reason))
 
 -- | Resolution attempt for a blocked guard
 data ResolutionAttempt = ResolutionAttempt
@@ -193,12 +135,9 @@ data ResolutionAttempt = ResolutionAttempt
 
 instance Disp ResolutionAttempt where
   disp (ResolutionAttempt tool attempt count) =
-    nest 4
-      $ vsep
-        [ "",
-          label "⟳ Resolving guard for" <+> styledToolName (pretty tool),
-          dimText ("  Attempt " <> pretty attempt <> ", running " <> pretty count <> " query(s)")
-        ]
+    let hdr = label "⟳ Resolving guard for" <+> styledToolName (pretty tool)
+        detail = dimText ("  Attempt " <> pretty attempt <> ", running " <> pretty count <> " query(s)")
+     in nest 4 $ vsep ["", hdr, detail]
 
 -- | Tool call triggered by Sentinel for data gathering (not LLM-initiated)
 data QueryExecution = QueryExecution
@@ -209,14 +148,7 @@ data QueryExecution = QueryExecution
 
 instance Disp QueryExecution where
   disp (QueryExecution name input) =
-    nest 4
-      $ vsep
-        [ "",
-          subheader "## Tool Use" <+> dimText "(Sentinel)",
-          "",
-          label "Tool:" <+> styledToolName (pretty name),
-          label "Input:" <+> dimText (wrappedText input)
-        ]
+    nest 4 $ vsep ["", toolDisplay (subheader "## Tool Use" <+> dimText "(Sentinel)") name input]
 
 -- | Guard needs user input to proceed
 data NeedsUserInput = NeedsUserInput
@@ -227,13 +159,8 @@ data NeedsUserInput = NeedsUserInput
 
 instance Disp NeedsUserInput where
   disp (NeedsUserInput tool q) =
-    nest 4
-      $ vsep
-        [ "",
-          label "? Guard for" <+> styledToolName (pretty tool) <+> label "needs user input:",
-          "",
-          wrappedText q
-        ]
+    let hdr = label "? Guard for" <+> styledToolName (pretty tool) <+> label "needs user input:"
+     in section 4 hdr (wrappedText q)
 
 -- | Result of an eligibility check (from CheckEligibility tool)
 data EligibilityCheckResult
@@ -246,23 +173,11 @@ instance Disp EligibilityCheckResult where
   disp = \case
     EligibilityVerified claim proofs ->
       let (firstProof :| _) = proofs
-       in nest 4
-            $ vsep
-              [ successText "✓" <+> label "Verified:" <+> pretty claim,
-                "",
-                indent 2 (disp firstProof)
-              ]
+          hdr = successText "✓" <+> label "Verified:" <+> pretty claim
+       in section 4 hdr (indent 2 (disp firstProof))
     EligibilityDenied claim reason ->
-      nest 4
-        $ vsep
-          [ errorText "✗" <+> label "Not verified:" <+> pretty claim,
-            "",
-            indent 2 (wrappedText reason)
-          ]
+      let hdr = errorText "✗" <+> label "Not verified:" <+> pretty claim
+       in section 4 hdr (indent 2 (wrappedText reason))
     EligibilityNeedsInfo claim question ->
-      nest 4
-        $ vsep
-          [ label "?" <+> label "Needs info for:" <+> pretty claim,
-            "",
-            indent 2 (wrappedText question)
-          ]
+      let hdr = label "?" <+> label "Needs info for:" <+> pretty claim
+       in section 4 hdr (indent 2 (wrappedText question))

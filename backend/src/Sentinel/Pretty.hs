@@ -32,6 +32,11 @@ module Sentinel.Pretty
     quoted,
     wrappedText,
     dimText,
+
+    -- * Layout helpers
+    section,
+    sectionNoBody,
+    toolDisplay,
   )
 where
 
@@ -182,3 +187,30 @@ wrappedText txt =
   let textLines = Text.lines txt
       wrapLine ln = fillSep (pretty <$> Text.words ln)
    in vsep (wrapLine <$> textLines)
+
+--------------------------------------------------------------------------------
+-- Layout helpers
+--------------------------------------------------------------------------------
+
+-- | Create a section with a header and body content.
+-- This abstracts the common pattern: @nest n $ vsep ["", headerDoc, "", body]@
+section :: Int -> Doc Ann -> Doc Ann -> Doc Ann
+section indentLevel headerDoc body =
+  nest indentLevel $ vsep ["", headerDoc, "", body]
+
+-- | Create a section with just a header (no body content).
+-- This abstracts the common pattern: @nest n $ vsep ["", headerDoc]@
+sectionNoBody :: Int -> Doc Ann -> Doc Ann
+sectionNoBody indentLevel headerDoc =
+  nest indentLevel $ vsep ["", headerDoc]
+
+-- | Display tool information with name and input.
+-- Used for both LLM-initiated and Sentinel-initiated tool calls.
+toolDisplay :: Doc Ann -> Text -> Text -> Doc Ann
+toolDisplay headerDoc toolName input =
+  vsep
+    [ headerDoc,
+      "",
+      label "Tool:" <+> styledToolName (pretty toolName),
+      label "Input:" <+> dimText (wrappedText input)
+    ]
