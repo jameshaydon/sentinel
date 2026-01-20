@@ -28,16 +28,6 @@ module Examples.AirLogic.Tools
 
     -- * Context
     airLogicContextDecls,
-
-    -- * Helpers (re-exported from Sentinel.JSON)
-    extractString,
-
-    -- * Fact Production
-    bookingToFacts,
-    flightToFacts,
-    airportToFacts,
-    userToFacts,
-    rebookingPolicyToFacts,
   )
 where
 
