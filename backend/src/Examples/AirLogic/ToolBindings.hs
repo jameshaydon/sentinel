@@ -41,18 +41,16 @@ module Examples.AirLogic.ToolBindings
   )
 where
 
-import Data.Aeson (Value, object)
-import Data.Aeson qualified as Aeson
-import Data.Aeson.KeyMap qualified as KM
-import Data.Text qualified as T
 import Pre
+import Sentinel.JSON (extractArrayField, extractBool, extractNumber, extractString)
 import Sentinel.Solver.ToolBindings
   ( ToolBinding (..),
     ToolBindingRegistry,
     emptyToolBindingRegistry,
     registerBinding,
+    singleArgBuilder,
   )
-import Sentinel.Solver.Types (BaseFact (..), Scalar (..), scalarToJSON)
+import Sentinel.Solver.Types (BaseFact (..), Scalar (..))
 
 --------------------------------------------------------------------------------
 -- Registry
@@ -131,9 +129,7 @@ flightStatusBinding =
       inputArity = 1,
       toolName = "GetFlightDetails",
       description = "Get flight operational status",
-      buildArgs = \case
-        [flightId] -> object ["flightId" Aeson..= scalarToJSON flightId]
-        args -> error $ "flight_status expects 1 input arg, got " <> show (length args),
+      buildArgs = singleArgBuilder "flightId" "flight_status",
       extractFacts = \inputArgs result ->
         let flightId = headMay inputArgs
             status = extractString "status" result
@@ -152,9 +148,7 @@ flightDelayMinutesBinding =
       inputArity = 1,
       toolName = "GetFlightDetails",
       description = "Get flight delay in minutes",
-      buildArgs = \case
-        [flightId] -> object ["flightId" Aeson..= scalarToJSON flightId]
-        args -> error $ "flight_delay_minutes expects 1 input arg, got " <> show (length args),
+      buildArgs = singleArgBuilder "flightId" "flight_delay_minutes",
       extractFacts = \inputArgs result ->
         let flightId = headMay inputArgs
             delay = extractNumber "delayMinutes" result
@@ -173,9 +167,7 @@ flightDepartureAirportBinding =
       inputArity = 1,
       toolName = "GetFlightDetails",
       description = "Get flight departure airport",
-      buildArgs = \case
-        [flightId] -> object ["flightId" Aeson..= scalarToJSON flightId]
-        args -> error $ "flight_departure_airport expects 1 input arg, got " <> show (length args),
+      buildArgs = singleArgBuilder "flightId" "flight_departure_airport",
       extractFacts = \inputArgs result ->
         let flightId = headMay inputArgs
             airport = extractString "departureAirport" result
@@ -194,9 +186,7 @@ flightArrivalAirportBinding =
       inputArity = 1,
       toolName = "GetFlightDetails",
       description = "Get flight arrival airport",
-      buildArgs = \case
-        [flightId] -> object ["flightId" Aeson..= scalarToJSON flightId]
-        args -> error $ "flight_arrival_airport expects 1 input arg, got " <> show (length args),
+      buildArgs = singleArgBuilder "flightId" "flight_arrival_airport",
       extractFacts = \inputArgs result ->
         let flightId = headMay inputArgs
             airport = extractString "arrivalAirport" result
@@ -220,9 +210,7 @@ bookingFareClassBinding =
       inputArity = 1,
       toolName = "GetBooking",
       description = "Get booking fare class",
-      buildArgs = \case
-        [bookingId] -> object ["bookingId" Aeson..= scalarToJSON bookingId]
-        args -> error $ "booking_fare_class expects 1 input arg, got " <> show (length args),
+      buildArgs = singleArgBuilder "bookingId" "booking_fare_class",
       extractFacts = \inputArgs result ->
         let bookingId = headMay inputArgs
             fareClass = extractString "fareClass" result
@@ -241,9 +229,7 @@ bookingAmountBinding =
       inputArity = 1,
       toolName = "GetBooking",
       description = "Get booking amount in cents",
-      buildArgs = \case
-        [bookingId] -> object ["bookingId" Aeson..= scalarToJSON bookingId]
-        args -> error $ "booking_amount expects 1 input arg, got " <> show (length args),
+      buildArgs = singleArgBuilder "bookingId" "booking_amount",
       extractFacts = \inputArgs result ->
         let bookingId = headMay inputArgs
             amount = extractNumber "totalAmountCents" result
@@ -262,9 +248,7 @@ bookingFlightBinding =
       inputArity = 1,
       toolName = "GetBooking",
       description = "Get booking's flight ID",
-      buildArgs = \case
-        [bookingId] -> object ["bookingId" Aeson..= scalarToJSON bookingId]
-        args -> error $ "booking_flight expects 1 input arg, got " <> show (length args),
+      buildArgs = singleArgBuilder "bookingId" "booking_flight",
       extractFacts = \inputArgs result ->
         let bookingId = headMay inputArgs
             flightId = extractString "flightId" result
@@ -283,9 +267,7 @@ bookingUserBinding =
       inputArity = 1,
       toolName = "GetBooking",
       description = "Get booking's user ID",
-      buildArgs = \case
-        [bookingId] -> object ["bookingId" Aeson..= scalarToJSON bookingId]
-        args -> error $ "booking_user expects 1 input arg, got " <> show (length args),
+      buildArgs = singleArgBuilder "bookingId" "booking_user",
       extractFacts = \inputArgs result ->
         let bookingId = headMay inputArgs
             userId = extractString "userId" result
@@ -304,9 +286,7 @@ hoursUntilDepartureBinding =
       inputArity = 1,
       toolName = "GetBooking",
       description = "Get hours until booking's flight departure",
-      buildArgs = \case
-        [bookingId] -> object ["bookingId" Aeson..= scalarToJSON bookingId]
-        args -> error $ "hours_until_departure expects 1 input arg, got " <> show (length args),
+      buildArgs = singleArgBuilder "bookingId" "hours_until_departure",
       extractFacts = \inputArgs result ->
         let bookingId = headMay inputArgs
             hours = extractNumber "hoursUntilDeparture" result
@@ -329,9 +309,7 @@ isEUAirportBinding =
       inputArity = 1,
       toolName = "GetAirportInfo",
       description = "Check if airport is in EU (for EU261 eligibility)",
-      buildArgs = \case
-        [code] -> object ["code" Aeson..= scalarToJSON code]
-        args -> error $ "is_eu_airport expects 1 input arg, got " <> show (length args),
+      buildArgs = singleArgBuilder "code" "is_eu_airport",
       extractFacts = \inputArgs result ->
         let code = headMay inputArgs
             isEU = extractBool "isEU" result
@@ -355,9 +333,7 @@ userBookingsBinding =
       inputArity = 1,
       toolName = "GetUserBookings",
       description = "Get all bookings for a user",
-      buildArgs = \case
-        [userId] -> object ["userId" Aeson..= scalarToJSON userId]
-        args -> error $ "user_bookings expects 1 input arg, got " <> show (length args),
+      buildArgs = singleArgBuilder "userId" "user_bookings",
       extractFacts = \inputArgs result ->
         let userId = headMay inputArgs
             -- Result is an array of bookings; extract bookingId from each
@@ -378,9 +354,7 @@ userLoyaltyTierBinding =
       inputArity = 1,
       toolName = "GetUserProfile",
       description = "Get user's loyalty tier",
-      buildArgs = \case
-        [userId] -> object ["userId" Aeson..= scalarToJSON userId]
-        args -> error $ "user_loyalty_tier expects 1 input arg, got " <> show (length args),
+      buildArgs = singleArgBuilder "userId" "user_loyalty_tier",
       extractFacts = \inputArgs result ->
         let userId = headMay inputArgs
             tier = extractString "loyaltyTier" result
@@ -403,9 +377,7 @@ rebookingAllowedBinding =
       inputArity = 1,
       toolName = "GetRebookingPolicy",
       description = "Check if rebooking is allowed for fare class",
-      buildArgs = \case
-        [fareClass] -> object ["fareClass" Aeson..= scalarToJSON fareClass]
-        args -> error $ "rebooking_allowed expects 1 input arg, got " <> show (length args),
+      buildArgs = singleArgBuilder "fareClass" "rebooking_allowed",
       extractFacts = \inputArgs result ->
         let fareClass = headMay inputArgs
             allowed = extractBool "rebookingAllowed" result
@@ -424,9 +396,7 @@ rebookingFeeBinding =
       inputArity = 1,
       toolName = "GetRebookingPolicy",
       description = "Get rebooking change fee for fare class",
-      buildArgs = \case
-        [fareClass] -> object ["fareClass" Aeson..= scalarToJSON fareClass]
-        args -> error $ "rebooking_fee expects 1 input arg, got " <> show (length args),
+      buildArgs = singleArgBuilder "fareClass" "rebooking_fee",
       extractFacts = \inputArgs result ->
         let fareClass = headMay inputArgs
             fee = extractNumber "changeFee" result
@@ -434,40 +404,3 @@ rebookingFeeBinding =
               (Just fc, Just f) -> [BaseFact "rebooking_fee" [fc, ScNum f]]
               _ -> []
     }
-
---------------------------------------------------------------------------------
--- JSON Extraction Helpers
---------------------------------------------------------------------------------
-
--- | Extract a string field from a JSON object.
-extractString :: Text -> Value -> Maybe Text
-extractString fieldName = \case
-  Aeson.Object obj -> case KM.lookup (fromString (T.unpack fieldName)) obj of
-    Just (Aeson.String s) -> Just s
-    _ -> Nothing
-  _ -> Nothing
-
--- | Extract a number field from a JSON object.
-extractNumber :: Text -> Value -> Maybe Double
-extractNumber fieldName = \case
-  Aeson.Object obj -> case KM.lookup (fromString (T.unpack fieldName)) obj of
-    Just (Aeson.Number n) -> Just (realToFrac n)
-    _ -> Nothing
-  _ -> Nothing
-
--- | Extract a boolean field from a JSON object.
-extractBool :: Text -> Value -> Maybe Bool
-extractBool fieldName = \case
-  Aeson.Object obj -> case KM.lookup (fromString (T.unpack fieldName)) obj of
-    Just (Aeson.Bool b) -> Just b
-    _ -> Nothing
-  _ -> Nothing
-
--- | Extract a field from each element of a JSON array.
--- Used for tools that return lists (like GetUserBookings).
-extractArrayField :: Text -> Value -> [Text]
-extractArrayField fieldName = \case
-  Aeson.Array arr -> mapMaybe (extractString fieldName) (toList arr)
-  -- If it's a single object (not wrapped in array), try extracting from it
-  obj@(Aeson.Object _) -> maybeToList (extractString fieldName obj)
-  _ -> []

@@ -29,7 +29,7 @@ module Examples.AirLogic.Tools
     -- * Context
     airLogicContextDecls,
 
-    -- * Helpers
+    -- * Helpers (re-exported from Sentinel.JSON)
     extractString,
 
     -- * Fact Production
@@ -41,9 +41,6 @@ module Examples.AirLogic.Tools
   )
 where
 
-import Data.Aeson qualified as Aeson
-import Data.Aeson.Key qualified as Key
-import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Text qualified as T
 import Examples.AirLogic.MockDB
   ( getAirportInfo,
@@ -57,10 +54,11 @@ import Examples.AirLogic.ToolBindings (airLogicToolBindings)
 import Examples.AirLogic.Types
 import Pre
 import Sentinel.Context (ContextDecl (..), ContextDecls, SeedSpec (..), declareContext, emptyContextDecls)
+import Sentinel.JSON (extractString)
 import Sentinel.Schema qualified as Schema
 import Sentinel.Sentinel (getDb)
 import Sentinel.Solver.Askable (AskableDecl (..), AskableRegistry, EvidenceType (..), declareAskable, emptyAskableRegistry)
-import Sentinel.Solver.Combinators (SolverM, failWith, oneOf, queryPredicate, require)
+import Sentinel.Solver.Combinators (SolverM, extractArg, oneOf, queryPredicate, require)
 import Sentinel.Solver.Types (BaseFact (..), Proof (..), Scalar (..))
 import Sentinel.Tool (Guard, Tool (..), ToolCategory (..), ToolGuard (..), ToolOutput (..))
 import Sentinel.Toolkit (Toolkit (..))
@@ -401,28 +399,6 @@ issueVoucherTool =
 -- Guards
 --------------------------------------------------------------------------------
 
--- | Helper to extract a scalar value from tool arguments.
-extractArg :: Text -> Aeson.Value -> SolverM Scalar
-extractArg key args = case extractToolArg key args of
-  Just s -> pure s
-  Nothing -> failWith $ "Missing argument: " <> key
-
--- | Extract a scalar value from JSON tool arguments.
-extractToolArg :: Text -> Aeson.Value -> Maybe Scalar
-extractToolArg key (Aeson.Object obj) =
-  case KeyMap.lookup (Key.fromText key) obj of
-    Just v -> scalarFromJSON v
-    Nothing -> Nothing
-extractToolArg _ _ = Nothing
-
--- | Try to parse a JSON value as a scalar.
-scalarFromJSON :: Aeson.Value -> Maybe Scalar
-scalarFromJSON = \case
-  Aeson.Bool b -> Just (ScBool b)
-  Aeson.Number n -> Just (ScNum (realToFrac n))
-  Aeson.String t -> Just (ScStr t)
-  _ -> Nothing
-
 -- | Extract a Double from a Scalar, defaulting to 0 if not a number.
 getScalarNum :: Scalar -> Double
 getScalarNum = \case
@@ -702,14 +678,6 @@ rebookingPolicyToFacts p =
 --------------------------------------------------------------------------------
 -- Helpers
 --------------------------------------------------------------------------------
-
--- | Helper to extract a string value from JSON args.
-extractString :: Text -> Aeson.Value -> Maybe Text
-extractString key (Aeson.Object obj) =
-  case KeyMap.lookup (Key.fromText key) obj of
-    Just (Aeson.String s) -> Just s
-    _ -> Nothing
-extractString _ _ = Nothing
 
 -- | Parse a fare class from text.
 parseFareClass :: Text -> Maybe FareClass

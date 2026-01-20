@@ -34,12 +34,13 @@ import Data.Text qualified as T
 import Data.Text.Lazy qualified as T.Lazy
 import Pre
 import Sentinel.Context (ContextDecls)
+import Sentinel.Facts (HasFactStore (..))
 import Sentinel.Facts qualified as Facts
 import Sentinel.Output qualified as Output
-import Sentinel.Sentinel (Sentinel (..), SentinelEnv (..), SentinelM, SentinelResult (..), UserQuestion (..), addFacts, getAskableStore, getContextStore)
+import Sentinel.Sentinel (Sentinel (..), SentinelEnv (..), SentinelM, SentinelResult (..), UserQuestion (..), getAskableStore, getContextStore)
 import Sentinel.Solver (runSolver)
 import Sentinel.Solver.Askable (AskableRegistry)
-import Sentinel.Solver.Combinators (SolverEnv (..), emptySolverState, withRule)
+import Sentinel.Solver.Combinators (SolverEnv (..), SolverState (..), emptySolverState, withRule)
 import Sentinel.Solver.ToolBindings (ToolBindingRegistry)
 import Sentinel.Solver.Types
   ( AskableBlock (..),
@@ -211,11 +212,9 @@ evaluateToolGuard toolkit tool args = do
               }
       let initState = emptySolverState baseFactStore askStore
 
-      -- Wrap the guard function to produce SolverSuccess
+      -- Run the guard function to produce SolverSuccess
       let solverAction = withRule guardName $ do
-            innerProof <- guardFn args
-            -- Wrap the inner proof with the guard name for hierarchy
-            let proof = RuleApplied guardName [innerProof]
+            proof <- guardFn args
             pure
               SolverSuccess
                 { bindings = M.empty,
@@ -223,7 +222,9 @@ evaluateToolGuard toolkit tool args = do
                   reason = guardName
                 }
 
-      (result, _finalState) <- liftIO $ runSolver solverEnv initState solverAction
+      (result, finalState) <- liftIO $ runSolver solverEnv initState solverAction
+      -- Persist any facts discovered during solver run back to SentinelM
+      addFacts (Facts.allBaseFacts finalState.baseFactStore)
       case result of
         Success successes ->
           pure $ ToolGuardPassed successes

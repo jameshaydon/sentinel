@@ -29,18 +29,16 @@ module Examples.AirCanada.ToolBindings
   )
 where
 
-import Data.Aeson (Value, object)
-import Data.Aeson qualified as Aeson
-import Data.Aeson.KeyMap qualified as KM
-import Data.Text qualified as T
 import Pre
+import Sentinel.JSON (extractArrayField, extractNestedString, extractNumber, extractString)
 import Sentinel.Solver.ToolBindings
   ( ToolBinding (..),
     ToolBindingRegistry,
     emptyToolBindingRegistry,
     registerBinding,
+    singleArgBuilder,
   )
-import Sentinel.Solver.Types (BaseFact (..), Scalar (..), scalarToJSON)
+import Sentinel.Solver.Types (BaseFact (..), Scalar (..))
 
 --------------------------------------------------------------------------------
 -- Registry
@@ -103,9 +101,7 @@ flightStatusBinding =
       inputArity = 1,
       toolName = "CheckFlightStatus",
       description = "Get flight operational status",
-      buildArgs = \case
-        [flightId] -> object ["flightNumber" Aeson..= scalarToJSON flightId]
-        args -> error $ "flight_status expects 1 input arg, got " <> show (length args),
+      buildArgs = singleArgBuilder "flightNumber" "flight_status",
       extractFacts = \inputArgs result ->
         let flightId = headMay inputArgs
             status = extractString "status" result
@@ -124,9 +120,7 @@ flightOriginBinding =
       inputArity = 1,
       toolName = "CheckFlightStatus",
       description = "Get flight departure airport",
-      buildArgs = \case
-        [flightId] -> object ["flightNumber" Aeson..= scalarToJSON flightId]
-        args -> error $ "flight_origin expects 1 input arg, got " <> show (length args),
+      buildArgs = singleArgBuilder "flightNumber" "flight_origin",
       extractFacts = \inputArgs result ->
         let flightId = headMay inputArgs
             origin = extractString "origin" result
@@ -145,9 +139,7 @@ flightDestinationBinding =
       inputArity = 1,
       toolName = "CheckFlightStatus",
       description = "Get flight arrival airport",
-      buildArgs = \case
-        [flightId] -> object ["flightNumber" Aeson..= scalarToJSON flightId]
-        args -> error $ "flight_destination expects 1 input arg, got " <> show (length args),
+      buildArgs = singleArgBuilder "flightNumber" "flight_destination",
       extractFacts = \inputArgs result ->
         let flightId = headMay inputArgs
             dest = extractString "destination" result
@@ -170,9 +162,7 @@ bookingFlightBinding =
       inputArity = 1,
       toolName = "RetrieveBooking",
       description = "Get flight number for a booking",
-      buildArgs = \case
-        [bookingId] -> object ["bookingRef" Aeson..= scalarToJSON bookingId]
-        args -> error $ "booking_flight expects 1 input arg, got " <> show (length args),
+      buildArgs = singleArgBuilder "bookingRef" "booking_flight",
       extractFacts = \inputArgs result ->
         let bookingId = headMay inputArgs
             flightNo = extractString "flightNo" result
@@ -192,9 +182,7 @@ bookingFareClassBinding =
       inputArity = 1,
       toolName = "RetrieveBooking",
       description = "Get ticket class for a booking",
-      buildArgs = \case
-        [bookingId] -> object ["bookingRef" Aeson..= scalarToJSON bookingId]
-        args -> error $ "booking_fare_class expects 1 input arg, got " <> show (length args),
+      buildArgs = singleArgBuilder "bookingRef" "booking_fare_class",
       extractFacts = \inputArgs result ->
         let bookingId = headMay inputArgs
             ticketClass = extractString "ticketClass" result
@@ -213,9 +201,7 @@ bookingAmountBinding =
       inputArity = 1,
       toolName = "RetrieveBooking",
       description = "Get booking price in cents",
-      buildArgs = \case
-        [bookingId] -> object ["bookingRef" Aeson..= scalarToJSON bookingId]
-        args -> error $ "booking_amount expects 1 input arg, got " <> show (length args),
+      buildArgs = singleArgBuilder "bookingRef" "booking_amount",
       extractFacts = \inputArgs result ->
         let bookingId = headMay inputArgs
             priceCents = extractNumber "priceCents" result
@@ -234,9 +220,7 @@ bookingPassengerBinding =
       inputArity = 1,
       toolName = "RetrieveBooking",
       description = "Get passenger name for a booking",
-      buildArgs = \case
-        [bookingId] -> object ["bookingRef" Aeson..= scalarToJSON bookingId]
-        args -> error $ "booking_passenger expects 1 input arg, got " <> show (length args),
+      buildArgs = singleArgBuilder "bookingRef" "booking_passenger",
       extractFacts = \inputArgs result ->
         let bookingId = headMay inputArgs
             passenger = extractString "passengerName" result
@@ -256,9 +240,7 @@ bookingSourceBinding =
       inputArity = 1,
       toolName = "RetrieveBooking",
       description = "Get booking source (direct, agency, etc.)",
-      buildArgs = \case
-        [bookingId] -> object ["bookingRef" Aeson..= scalarToJSON bookingId]
-        args -> error $ "booking_source expects 1 input arg, got " <> show (length args),
+      buildArgs = singleArgBuilder "bookingRef" "booking_source",
       extractFacts = \inputArgs result ->
         let bookingId = headMay inputArgs
             -- bookingSource is nested inside ticketDetails
@@ -279,9 +261,7 @@ bookingTicketTypeBinding =
       inputArity = 1,
       toolName = "RetrieveBooking",
       description = "Get ticket type (refundable, non-refundable, etc.)",
-      buildArgs = \case
-        [bookingId] -> object ["bookingRef" Aeson..= scalarToJSON bookingId]
-        args -> error $ "booking_ticket_type expects 1 input arg, got " <> show (length args),
+      buildArgs = singleArgBuilder "bookingRef" "booking_ticket_type",
       extractFacts = \inputArgs result ->
         let bookingId = headMay inputArgs
             -- ticketType is nested inside ticketDetails
@@ -306,9 +286,7 @@ userBookingsBinding =
       inputArity = 1,
       toolName = "SearchBookingsByName",
       description = "Get all bookings for a user",
-      buildArgs = \case
-        [userName] -> object ["passengerName" Aeson..= scalarToJSON userName]
-        args -> error $ "user_bookings expects 1 input arg, got " <> show (length args),
+      buildArgs = singleArgBuilder "passengerName" "user_bookings",
       extractFacts = \inputArgs result ->
         let userName = headMay inputArgs
             -- Result is an array of bookings; extract bookingRef from each
@@ -318,44 +296,3 @@ userBookingsBinding =
                 [BaseFact "user_bookings" [uid, ScStr ref] | ref <- bookingRefs]
               Nothing -> []
     }
-
---------------------------------------------------------------------------------
--- JSON Extraction Helpers
---------------------------------------------------------------------------------
-
--- | Extract a string field from a JSON object.
-extractString :: Text -> Value -> Maybe Text
-extractString fieldName = \case
-  Aeson.Object obj -> case KM.lookup (fromString (T.unpack fieldName)) obj of
-    Just (Aeson.String s) -> Just s
-    _ -> Nothing
-  _ -> Nothing
-
--- | Extract a number field from a JSON object.
-extractNumber :: Text -> Value -> Maybe Double
-extractNumber fieldName = \case
-  Aeson.Object obj -> case KM.lookup (fromString (T.unpack fieldName)) obj of
-    Just (Aeson.Number n) -> Just (realToFrac n)
-    _ -> Nothing
-  _ -> Nothing
-
--- | Extract a nested string field from a JSON object.
--- Path is a list of field names to traverse.
-extractNestedString :: [Text] -> Value -> Maybe Text
-extractNestedString path value = go path value
-  where
-    go [] (Aeson.String s) = Just s
-    go (p : ps) (Aeson.Object obj) =
-      case KM.lookup (fromString (T.unpack p)) obj of
-        Just v -> go ps v
-        Nothing -> Nothing
-    go _ _ = Nothing
-
--- | Extract a field from each element of a JSON array.
--- Used for tools that return lists (like SearchBookingsByName).
-extractArrayField :: Text -> Value -> [Text]
-extractArrayField fieldName = \case
-  Aeson.Array arr -> mapMaybe (extractString fieldName) (toList arr)
-  -- If it's a single object (not wrapped in array), try extracting from it
-  obj@(Aeson.Object _) -> maybeToList (extractString fieldName obj)
-  _ -> []

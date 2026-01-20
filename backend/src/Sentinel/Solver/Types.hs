@@ -7,6 +7,8 @@ module Sentinel.Solver.Types
     Scalar (..),
     scalarToJSON,
     scalarFromJSON,
+    dispScalar,
+    scalarToText,
 
     -- * Base Facts
     BaseFact (..),
@@ -64,6 +66,23 @@ scalarFromJSON = \case
   Aeson.String t -> Just (ScStr t)
   _ -> Nothing
 
+-- | Display a scalar for pretty-printing (proof traces, diagnostics).
+-- Uses "true"/"false" for bools and quotes strings.
+dispScalar :: Scalar -> Doc Ann
+dispScalar = \case
+  ScBool b -> if b then "true" else "false"
+  ScNum n -> pretty (show n)
+  ScStr t -> dquotes (pretty t)
+
+-- | Convert a scalar to text (for question formatting, descriptions).
+-- Uses "yes"/"no" for bools and plain strings (no quotes).
+scalarToText :: Scalar -> Text
+scalarToText = \case
+  ScBool True -> "yes"
+  ScBool False -> "no"
+  ScNum n -> fromString (show n)
+  ScStr t -> t
+
 --------------------------------------------------------------------------------
 -- Base Facts
 --------------------------------------------------------------------------------
@@ -82,12 +101,7 @@ data BaseFact = BaseFact
 instance Disp BaseFact where
   disp fact =
     pretty fact.predicateName
-      <> parens (hsep (punctuate comma (dispArg <$> fact.arguments)))
-    where
-      dispArg = \case
-        ScBool b -> if b then "true" else "false"
-        ScNum n -> pretty (show n)
-        ScStr t -> dquotes (pretty t)
+      <> parens (hsep (punctuate comma (dispScalar <$> fact.arguments)))
 
 --------------------------------------------------------------------------------
 -- Proof Traces
@@ -119,11 +133,6 @@ instance Disp Proof where
         ]
     ContextBound name value ->
       "context:" <+> pretty name <+> "=" <+> dispScalar value
-    where
-      dispScalar = \case
-        ScBool b -> if b then "true" else "false"
-        ScNum n -> pretty (show n)
-        ScStr t -> dquotes (pretty t)
 
 -- | A proof tree with the goal and its result.
 data ProofTree = ProofTree
@@ -185,10 +194,6 @@ instance Disp SolverSuccess where
           $ [ pretty k <+> "=" <+> dispScalar v
             | (k, v) <- M.toList m
             ]
-      dispScalar = \case
-        ScBool b -> if b then "true" else "false"
-        ScNum n -> pretty (show n)
-        ScStr t -> dquotes (pretty t)
 
 -- | Information about a blocked context variable.
 data ContextBlock = ContextBlock
@@ -269,11 +274,6 @@ instance Disp ProofResult where
 instance Disp ContextCandidate where
   disp cc =
     dispScalar cc.value <+> "-" <+> pretty cc.description
-    where
-      dispScalar = \case
-        ScBool b -> if b then "true" else "false"
-        ScNum n -> pretty (show n)
-        ScStr t -> dquotes (pretty t)
 
 instance Disp ContextBlock where
   disp cb =
@@ -301,16 +301,11 @@ instance Disp AskableBlock where
           args ->
             indent 2
               $ label "Arguments:"
-              <+> hsep (punctuate comma (dispArg <$> args)),
+              <+> hsep (punctuate comma (dispScalar <$> args)),
         case ab.partialProof of
           Nothing -> mempty
           Just p -> vsep [indent 2 (label "Progress so far:"), indent 4 (disp p)]
       ]
-    where
-      dispArg = \case
-        ScBool b -> if b then "true" else "false"
-        ScNum n -> pretty (show n)
-        ScStr t -> dquotes (pretty t)
 
 instance Disp SolverResult where
   disp = \case

@@ -25,7 +25,7 @@ where
 import Data.Map.Strict qualified as M
 import Data.Text qualified as Text
 import Pre
-import Sentinel.Solver.Types (Scalar (ScBool, ScNum, ScStr))
+import Sentinel.Solver.Types (Scalar (..), scalarToText)
 
 --------------------------------------------------------------------------------
 -- Askable Declaration
@@ -106,10 +106,3 @@ formatQuestion template args = foldl' replaceArg template (zip [0 :: Int ..] arg
       let placeholder = "{" <> Text.pack (show i) <> "}"
           replacement = scalarToText arg
        in Text.replace placeholder replacement t
-
-    scalarToText :: Scalar -> Text
-    scalarToText = \case
-      ScBool True -> "yes"
-      ScBool False -> "no"
-      ScNum n -> Text.pack (show n)
-      ScStr t -> t

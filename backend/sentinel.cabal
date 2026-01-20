@@ -33,6 +33,7 @@ library
       Sentinel.Context
       Sentinel.Example
       Sentinel.Facts
+      Sentinel.JSON
       Sentinel.LLM
       Sentinel.Output
       Sentinel.Pretty

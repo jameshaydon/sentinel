@@ -3,7 +3,10 @@
 -- This module provides 'BaseFactStore' for storing solver facts as 'BaseFact' values.
 -- The fact store is keyed by predicate name for efficient lookup.
 module Sentinel.Facts
-  ( -- * Evidence
+  ( -- * Fact Store Operations (Typeclass)
+    HasFactStore (..),
+
+    -- * Evidence
     Evidence (..),
 
     -- * Base Fact Store
@@ -27,6 +30,26 @@ import Data.Map.Strict qualified as M
 import Data.Set qualified as Set
 import Pre
 import Sentinel.Solver.Types (BaseFact (..), Scalar)
+
+--------------------------------------------------------------------------------
+-- Fact Store Typeclass
+--------------------------------------------------------------------------------
+
+-- | Typeclass for monads that have access to a base fact store.
+class (Monad m) => HasFactStore m where
+  -- | Add a single fact to the store.
+  addFact :: BaseFact -> m ()
+
+  -- | Add multiple facts to the store.
+  addFacts :: [BaseFact] -> m ()
+  addFacts = traverse_ addFact
+
+  -- | Get the entire fact store.
+  getFactStore :: m BaseFactStore
+
+--------------------------------------------------------------------------------
+-- Evidence
+--------------------------------------------------------------------------------
 
 -- | Evidence level for how a fact was established.
 -- Higher constructors represent stronger evidence.

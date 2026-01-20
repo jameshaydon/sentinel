@@ -19,10 +19,9 @@ module Examples.AirCanada.Queries
 where
 
 import Data.Aeson qualified as Aeson
-import Data.Aeson.Key qualified as Key
-import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Text qualified as T
 import Pre
+import Sentinel.JSON (extractString)
 import Sentinel.Schema qualified as Schema
 import Sentinel.Sentinel qualified as Sentinel
 import Sentinel.Solver.Types (Scalar (..))
@@ -217,15 +216,3 @@ establishAskableTool =
     showScalar (ScStr s) = s
     showScalar (ScNum n) = fromString (show n)
     showScalar (ScBool b) = if b then "true" else "false"
-
---------------------------------------------------------------------------------
--- Helpers
---------------------------------------------------------------------------------
-
--- | Extract a string value from JSON args.
-extractString :: Text -> Aeson.Value -> Maybe Text
-extractString key (Aeson.Object obj) =
-  case KeyMap.lookup (Key.fromText key) obj of
-    Just (Aeson.String s) -> Just s
-    _ -> Nothing
-extractString _ _ = Nothing

@@ -32,17 +32,15 @@ module Sentinel.Solver.Combinators
     contextVar,
     askable,
 
-    -- * Fact Store Operations
-    addFact,
-    addFacts,
-    getFacts,
-
     -- * Proof Construction
     getCurrentProof,
     appendProof,
 
     -- * Failure
     failWith,
+
+    -- * Tool Argument Extraction
+    extractArg,
 
     -- * State Accessors
     getPendingAskables,
@@ -60,12 +58,14 @@ import Sentinel.Context (ContextDecl (..), ContextDecls, ContextStore, getContex
 import Sentinel.Facts
   ( AskableFactStore,
     BaseFactStore,
+    HasFactStore (..),
     addBaseFact,
     addBaseFacts,
     lookupAskableFact,
     lookupBaseFacts,
   )
 import Sentinel.Solver.Askable (AskableDecl (..), AskableRegistry, formatQuestion, lookupAskable)
+import Sentinel.JSON qualified as JSON
 import Sentinel.Solver.ToolBindings (ToolBinding (..), ToolBindingRegistry, lookupBinding)
 import Sentinel.Solver.Types
 
@@ -140,6 +140,13 @@ emptySolverState baseFacts askableFacts =
 -- - ReaderT: Immutable environment (registries, tool callback)
 -- - IO: For tool invocation
 type SolverM = LogicT (StateT SolverState (ReaderT SolverEnv IO))
+
+instance HasFactStore SolverM where
+  addFact fact = modify' $ \s ->
+    s {baseFactStore = addBaseFact fact s.baseFactStore}
+  addFacts facts = modify' $ \s ->
+    s {baseFactStore = addBaseFacts facts s.baseFactStore}
+  getFactStore = gets (.baseFactStore)
 
 -- | Run the solver and collect all successful proof paths.
 --
@@ -320,16 +327,11 @@ getCandidates decl = do
       pure
         [ ContextCandidate
             { value = arg,
-              description = dispScalar arg
+              description = scalarToText arg
             }
           | fact <- facts,
             arg <- take 1 (drop 1 fact.arguments) -- Second argument is typically the value
         ]
-  where
-    dispScalar = \case
-      ScBool b -> if b then "yes" else "no"
-      ScNum n -> tshow n
-      ScStr t -> t
 
 --------------------------------------------------------------------------------
 -- Askable Predicates
@@ -372,24 +374,6 @@ askable predName args = do
                   }
           modify' $ \s -> s {pendingAskables = block : s.pendingAskables}
           mzero -- Fail this branch, allowing backtracking
-
---------------------------------------------------------------------------------
--- Fact Store Operations
---------------------------------------------------------------------------------
-
--- | Add a single fact to the store.
-addFact :: BaseFact -> SolverM ()
-addFact fact = modify' $ \s ->
-  s {baseFactStore = addBaseFact fact s.baseFactStore}
-
--- | Add multiple facts to the store.
-addFacts :: [BaseFact] -> SolverM ()
-addFacts facts = modify' $ \s ->
-  s {baseFactStore = addBaseFacts facts s.baseFactStore}
-
--- | Get all facts for a predicate.
-getFacts :: Text -> SolverM [BaseFact]
-getFacts predName = gets (lookupBaseFacts predName . (.baseFactStore))
 
 --------------------------------------------------------------------------------
 -- Proof Construction
@@ -451,6 +435,23 @@ getFailedPaths s = s.failedPaths
 -- | Get current rule from solver state.
 getCurrentRule :: SolverState -> Maybe Text
 getCurrentRule s = s.currentRule
+
+--------------------------------------------------------------------------------
+-- Tool Argument Extraction
+--------------------------------------------------------------------------------
+
+-- | Extract a scalar argument from tool arguments, failing if missing.
+--
+-- This is a convenience wrapper around 'extractToolArg' that fails in SolverM
+-- when the argument is missing or invalid.
+--
+-- @
+-- extractArg "bookingId" args >>= \\bookingId -> ...
+-- @
+extractArg :: Text -> Value -> SolverM Scalar
+extractArg key args = case JSON.extractToolArg key args of
+  Just s -> pure s
+  Nothing -> failWith $ "Missing argument: " <> key
 
 --------------------------------------------------------------------------------
 -- Helpers

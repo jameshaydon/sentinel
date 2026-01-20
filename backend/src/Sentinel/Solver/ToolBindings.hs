@@ -13,6 +13,9 @@ module Sentinel.Solver.ToolBindings
   ( -- * Tool Binding
     ToolBinding (..),
 
+    -- * Arg Builders
+    singleArgBuilder,
+
     -- * Tool Binding Registry
     ToolBindingRegistry (..),
     emptyToolBindingRegistry,
@@ -22,10 +25,12 @@ module Sentinel.Solver.ToolBindings
   )
 where
 
-import Data.Aeson (Value)
+import Data.Aeson (Value, object)
+import Data.Aeson qualified as Aeson
 import Data.Map.Strict qualified as M
+import Data.Text qualified as T
 import Pre
-import Sentinel.Solver.Types (BaseFact, Scalar)
+import Sentinel.Solver.Types (BaseFact, Scalar, scalarToJSON)
 
 --------------------------------------------------------------------------------
 -- Tool Binding
@@ -94,6 +99,35 @@ instance Show ToolBinding where
       <> ", toolName = "
       <> show b.toolName
       <> " }"
+
+--------------------------------------------------------------------------------
+-- Arg Builders
+--------------------------------------------------------------------------------
+
+-- | Build a JSON object with a single field from exactly one input argument.
+--
+-- This helper reduces boilerplate for the common case where a tool binding
+-- expects a single input argument and wraps it in a JSON object.
+--
+-- === Example
+--
+-- @
+-- buildArgs = singleArgBuilder "flightNumber" "flight_status"
+-- -- Equivalent to:
+-- buildArgs = \\case
+--   [flightId] -> object ["flightNumber" .= scalarToJSON flightId]
+--   args -> error $ "flight_status expects 1 input arg, got " <> show (length args)
+-- @
+singleArgBuilder ::
+  -- | JSON field name for the argument
+  Text ->
+  -- | Predicate name (for error messages)
+  Text ->
+  -- | Function from input args to JSON
+  ([Scalar] -> Value)
+singleArgBuilder fieldName predName = \case
+  [arg] -> object [fromString (T.unpack fieldName) Aeson..= scalarToJSON arg]
+  args -> error $ T.unpack predName <> " expects 1 input arg, got " <> show (length args)
 
 --------------------------------------------------------------------------------
 -- Tool Binding Registry

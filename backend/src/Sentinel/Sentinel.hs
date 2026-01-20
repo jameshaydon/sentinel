@@ -21,11 +21,6 @@ module Sentinel.Sentinel
     -- * Sentinel Interface
     Sentinel (..),
 
-    -- * Fact Operations
-    addFact,
-    addFacts,
-    getFacts,
-
     -- * Context Operations
     getContextValue,
     setContextValue,
@@ -51,9 +46,9 @@ import Data.Time (getCurrentTime)
 import Pre
 import Sentinel.Context (ContextEstablishment (..), ContextStore, EstablishmentMethod (..), emptyContextStore)
 import Sentinel.Context qualified as Context
-import Sentinel.Facts (AskableFactStore, BaseFactStore, emptyAskableFactStore)
+import Sentinel.Facts (AskableFactStore, BaseFactStore, HasFactStore (..), emptyAskableFactStore)
 import Sentinel.Facts qualified as Facts
-import Sentinel.Solver.Types (BaseFact, Scalar)
+import Sentinel.Solver.Types (Scalar)
 
 --------------------------------------------------------------------------------
 -- User Questions
@@ -166,26 +161,19 @@ data Sentinel db = Sentinel
   }
 
 --------------------------------------------------------------------------------
--- Fact Operations
+-- Fact Operations (HasFactStore instance)
 --------------------------------------------------------------------------------
 
--- | Add a single fact to the Sentinel's fact store.
-addFact :: BaseFact -> SentinelM db ()
-addFact fact = do
-  factsRef <- asks (.facts)
-  liftIO $ modifyIORef' factsRef (Facts.addBaseFact fact)
-
--- | Add multiple facts to the Sentinel's fact store.
-addFacts :: [BaseFact] -> SentinelM db ()
-addFacts newFacts = do
-  factsRef <- asks (.facts)
-  liftIO $ modifyIORef' factsRef (Facts.addBaseFacts newFacts)
-
--- | Get the current facts database.
-getFacts :: SentinelM db BaseFactStore
-getFacts = do
-  factsRef <- asks (.facts)
-  liftIO $ readIORef factsRef
+instance HasFactStore (SentinelM db) where
+  addFact fact = do
+    factsRef <- asks (.facts)
+    liftIO $ modifyIORef' factsRef (Facts.addBaseFact fact)
+  addFacts newFacts = do
+    factsRef <- asks (.facts)
+    liftIO $ modifyIORef' factsRef (Facts.addBaseFacts newFacts)
+  getFactStore = do
+    factsRef <- asks (.facts)
+    liftIO $ readIORef factsRef
 
 --------------------------------------------------------------------------------
 -- Database Access

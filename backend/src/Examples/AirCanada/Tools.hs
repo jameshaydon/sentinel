@@ -17,7 +17,7 @@ module Examples.AirCanada.Tools
     searchBookingsTool,
     processRefundTool,
 
-    -- * Helpers
+    -- * Helpers (re-exported from Sentinel.JSON)
     extractString,
 
     -- * Fact Production (exported for tests)
@@ -26,9 +26,6 @@ module Examples.AirCanada.Tools
   )
 where
 
-import Data.Aeson qualified as Aeson
-import Data.Aeson.Key qualified as Key
-import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Text qualified as T
 import Examples.AirCanada.MockDB (attemptRefund, getBooking, getFlight, listBookingsForPassenger)
 import Examples.AirCanada.Refund (DeathCircumstance (..), SpecialException (..))
@@ -36,10 +33,11 @@ import Examples.AirCanada.ToolBindings (airCanadaToolBindings)
 import Examples.AirCanada.Types
 import Pre
 import Sentinel.Context (emptyContextDecls)
+import Sentinel.JSON (extractString)
 import Sentinel.Schema qualified as Schema
 import Sentinel.Sentinel (getDb, modifyDb)
 import Sentinel.Solver.Askable (emptyAskableRegistry)
-import Sentinel.Solver.Combinators (SolverM, failWith, oneOf, queryPredicate)
+import Sentinel.Solver.Combinators (extractArg, oneOf, queryPredicate)
 import Sentinel.Solver.Types (BaseFact (..), Proof (..), Scalar (..))
 import Sentinel.Tool (Guard, Tool (..), ToolCategory (..), ToolGuard (..), ToolOutput (..))
 import Sentinel.Toolkit (Toolkit (..))
@@ -229,28 +227,6 @@ processRefundTool =
 -- Guards (Function-based)
 --------------------------------------------------------------------------------
 
--- | Helper to extract a scalar value from tool arguments.
-extractArg :: Text -> Aeson.Value -> SolverM Scalar
-extractArg key args = case extractToolArg key args of
-  Just s -> pure s
-  Nothing -> failWith $ "Missing argument: " <> key
-
--- | Extract a scalar value from JSON tool arguments.
-extractToolArg :: Text -> Aeson.Value -> Maybe Scalar
-extractToolArg key (Aeson.Object obj) =
-  case KeyMap.lookup (Key.fromText key) obj of
-    Just v -> scalarFromJSON v
-    Nothing -> Nothing
-extractToolArg _ _ = Nothing
-
--- | Try to parse a JSON value as a scalar.
-scalarFromJSON :: Aeson.Value -> Maybe Scalar
-scalarFromJSON = \case
-  Aeson.Bool b -> Just (ScBool b)
-  Aeson.Number n -> Just (ScNum (realToFrac n))
-  Aeson.String t -> Just (ScStr t)
-  _ -> Nothing
-
 -- | Guard that requires user identity to be established.
 --
 -- Queries the "logged_in_user" predicate to verify a user is logged in.
@@ -330,15 +306,3 @@ flightToFacts f =
     BaseFact "flight_origin" [ScStr f.flightNumber, ScStr f.origin],
     BaseFact "flight_destination" [ScStr f.flightNumber, ScStr f.destination]
   ]
-
---------------------------------------------------------------------------------
--- Helpers
---------------------------------------------------------------------------------
-
--- | Helper to extract a string value from JSON args.
-extractString :: Text -> Aeson.Value -> Maybe Text
-extractString key (Aeson.Object obj) =
-  case KeyMap.lookup (Key.fromText key) obj of
-    Just (Aeson.String s) -> Just s
-    _ -> Nothing
-extractString _ _ = Nothing
