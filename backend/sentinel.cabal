@@ -15,6 +15,8 @@ library
       Examples.AirCanada.Askables
       Examples.AirCanada.ContextDecls
       Examples.AirCanada.Example
+      Examples.AirCanada.Facts
+      Examples.AirCanada.Guards
       Examples.AirCanada.MockDB
       Examples.AirCanada.Queries
       Examples.AirCanada.Refund

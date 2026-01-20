@@ -27,6 +27,8 @@ module Examples.AirCanada.Tools
 where
 
 import Data.Text qualified as T
+import Examples.AirCanada.Facts (bookingToFacts, flightToFacts)
+import Examples.AirCanada.Guards (refundGuard, searchBookingsGuard, userIdentityGuard)
 import Examples.AirCanada.MockDB (attemptRefund, getBooking, getFlight, listBookingsForPassenger)
 import Examples.AirCanada.Refund (DeathCircumstance (..), SpecialException (..))
 import Examples.AirCanada.ToolBindings (airCanadaToolBindings)
@@ -37,9 +39,8 @@ import Sentinel.JSON (extractString)
 import Sentinel.Schema qualified as Schema
 import Sentinel.Sentinel (getDb, modifyDb)
 import Sentinel.Solver.Askable (emptyAskableRegistry)
-import Sentinel.Solver.Combinators (extractArg, oneOf, queryPredicate)
-import Sentinel.Solver.Types (BaseFact (..), Proof (..), Scalar (..))
-import Sentinel.Tool (Guard, Tool (..), ToolCategory (..), ToolGuard (..), ToolOutput (..))
+import Sentinel.Solver.Types (BaseFact (..), Scalar (..))
+import Sentinel.Tool (Tool (..), ToolCategory (..), ToolGuard (..), ToolOutput (..))
 import Sentinel.Toolkit (Toolkit (..))
 
 --------------------------------------------------------------------------------
@@ -222,87 +223,3 @@ processRefundTool =
               producedFacts = [] -- Action tools produce no facts
             }
     }
-
---------------------------------------------------------------------------------
--- Guards (Function-based)
---------------------------------------------------------------------------------
-
--- | Guard that requires user identity to be established.
---
--- Queries the "logged_in_user" predicate to verify a user is logged in.
-userIdentityGuard :: Guard
-userIdentityGuard _args = do
-  fact <- queryPredicate "logged_in_user" []
-  pure $ FactUsed fact
-
--- | Guard for SearchBookingsByName - requires identity AND name must match logged-in user.
---
--- This guard:
--- 1. Requires a user to be logged in
--- 2. Verifies the passengerName argument matches the logged-in user
-searchBookingsGuard :: Guard
-searchBookingsGuard args = do
-  name <- extractArg "passengerName" args
-  fact <- queryPredicate "logged_in_user" [name]
-  pure $ FactUsed fact
-
--- | Guard for refund tool.
---
--- Requires:
--- - User identity established
--- - Booking must exist (will be auto-fetched via tool binding)
--- - Booking source must not be TravelAgency or OtherAirline
-refundGuard :: Guard
-refundGuard args = do
-  bookingRef <- extractArg "bookingRef" args
-  -- Require user identity
-  _ <- queryPredicate "logged_in_user" []
-  -- Booking must exist (auto-fetched via tool binding)
-  _ <- queryPredicate "booking_passenger" [bookingRef]
-  -- Booking source must be acceptable (not from travel agency or other airline)
-  oneOf
-    [ do
-        fact <- queryPredicate "booking_source" [bookingRef, ScStr "DirectAirCanada"]
-        pure $ FactUsed fact,
-      do
-        fact <- queryPredicate "booking_source" [bookingRef, ScStr "GroupBooking"]
-        pure $ FactUsed fact
-    ]
-
---------------------------------------------------------------------------------
--- Fact Production
---------------------------------------------------------------------------------
-
--- | Convert a booking to its constituent BaseFacts.
---
--- Produces facts matching the predicates defined in ToolBindings:
--- - booking_passenger(BookingRef, PassengerName)
--- - booking_flight(BookingRef, FlightNo)
--- - booking_status(BookingRef, Status)
--- - booking_source(BookingRef, Source)
--- - booking_ticket_type(BookingRef, TicketType)
--- - booking_amount(BookingRef, PriceCents)
--- - booking_fare_class(BookingRef, TicketClass)
-bookingToFacts :: Booking -> [BaseFact]
-bookingToFacts b =
-  [ BaseFact "booking_passenger" [ScStr b.bookingRef, ScStr b.passengerName],
-    BaseFact "booking_flight" [ScStr b.bookingRef, ScStr b.flightNo],
-    BaseFact "booking_status" [ScStr b.bookingRef, ScStr (T.pack $ show b.bookingStatus)],
-    BaseFact "booking_source" [ScStr b.bookingRef, ScStr (T.pack $ show b.ticketDetails.bookingSource)],
-    BaseFact "booking_ticket_type" [ScStr b.bookingRef, ScStr (T.pack $ show b.ticketDetails.ticketType)],
-    BaseFact "booking_amount" [ScStr b.bookingRef, ScNum (fromIntegral b.priceCents)],
-    BaseFact "booking_fare_class" [ScStr b.bookingRef, ScStr b.ticketClass]
-  ]
-
--- | Convert a flight to its constituent BaseFacts.
---
--- Produces facts matching the predicates defined in ToolBindings:
--- - flight_status(FlightNumber, Status)
--- - flight_origin(FlightNumber, Origin)
--- - flight_destination(FlightNumber, Destination)
-flightToFacts :: Flight -> [BaseFact]
-flightToFacts f =
-  [ BaseFact "flight_status" [ScStr f.flightNumber, ScStr (T.pack $ show f.status)],
-    BaseFact "flight_origin" [ScStr f.flightNumber, ScStr f.origin],
-    BaseFact "flight_destination" [ScStr f.flightNumber, ScStr f.destination]
-  ]
