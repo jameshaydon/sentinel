@@ -26,7 +26,6 @@ module Sentinel.Solver.Combinators
     oneOf,
     require,
     withRule,
-    withReason,
 
     -- * Context and Askables
     contextVar,
@@ -266,14 +265,6 @@ withRule ruleName action = do
   result <- action
   modify' $ \s -> s {currentRule = oldRule}
   pure result
-
--- | Set the reason for a successful proof.
---
--- The reason is included in SolverSuccess for human-readable output.
-withReason :: Text -> SolverM a -> SolverM a
-withReason reason action = do
-  modify' $ \s -> s {currentReason = Just reason}
-  action
 
 --------------------------------------------------------------------------------
 -- Context Variables

@@ -11,15 +11,10 @@ module Examples.AirCanada.Refund
     Ticket (..),
     RefundReason (..),
     RefundRequest (..),
-    ExpiredCreditFee (..),
     calculateRefund,
-    applyPaperTicketFee,
-    isCreditExpired,
     isWithin24Hours,
     subtractMoney,
     twentyFourHours,
-    lostPaperTicketFee,
-    expiredCreditFee,
   )
 where
 
@@ -138,10 +133,6 @@ data RefundRequest = RefundRequest
 twentyFourHours :: NominalDiffTime
 twentyFourHours = 24 * 60 * 60
 
--- | Lost paper ticket fee ($100)
-lostPaperTicketFee :: Money
-lostPaperTicketFee = Money 10000
-
 -- | Check if a refund request is within 24 hours of purchase
 isWithin24Hours :: RefundRequest -> Bool
 isWithin24Hours req =
@@ -226,32 +217,3 @@ calculateRefund req =
           Involuntary r -> calculateInvoluntaryRefund req r
           Voluntary -> calculateVoluntaryRefund req
           SpecialCase exc -> calculateSpecialExceptionRefund req exc
-
--- | Apply lost paper ticket fee if applicable
-applyPaperTicketFee :: Ticket -> Bool -> RefundOutcome -> RefundOutcome
-applyPaperTicketFee t isLost outcome
-  | t.ticketFormat == Paper && isLost =
-      case outcome of
-        FullRefund m -> FullRefund (subtractMoney m lostPaperTicketFee)
-        PartialRefund m -> PartialRefund (subtractMoney m lostPaperTicketFee)
-        TravelCredit m -> TravelCredit (subtractMoney m lostPaperTicketFee)
-        ACWalletFunds m -> ACWalletFunds (subtractMoney m lostPaperTicketFee)
-        other -> other
-  | otherwise = outcome
-
--- | Check if a travel credit is expired (1 year)
-isCreditExpired :: UTCTime -> UTCTime -> Bool
-isCreditExpired issueTime currentTime =
-  diffUTCTime currentTime issueTime > oneYear
-  where
-    oneYear = 365 * 24 * 60 * 60
-
--- | Fee range for using expired credit ($50-$100)
-data ExpiredCreditFee = ExpiredCreditFee
-  { minFee :: Money,
-    maxFee :: Money
-  }
-  deriving stock (Eq, Show)
-
-expiredCreditFee :: ExpiredCreditFee
-expiredCreditFee = ExpiredCreditFee (Money 5000) (Money 10000)
