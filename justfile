@@ -25,3 +25,7 @@ build: hpack
 [group('lint')]
 weeder: build
   cd backend && weeder --hie-directory ".hie"
+
+[group('test')]
+test: build
+  cd backend && cabal test -O0
