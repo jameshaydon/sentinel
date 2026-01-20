@@ -1,0 +1,14 @@
+roots = [
+  "^Paths_",
+  # Library entry points used by executables
+  "^Examples.AirCanada.Example.airCanadaExample$",
+  "^Examples.AirLogic.Example.airLogicExample$",
+  "^Sentinel.Example.runExample$",
+  "^Sentinel.Agent.defaultConfig$",
+  # Custom prelude utilities
+  "^Pre\\.",
+]
+
+type-class-roots = true
+
+hie-directory = ".hie"

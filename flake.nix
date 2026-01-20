@@ -74,6 +74,7 @@
             hpkgs.hpack
             hpkgs.implicit-hie
             hpkgs.ghcid
+            hpkgs.weeder
             pkgs.zlib
             pkgs.pkg-config
 
