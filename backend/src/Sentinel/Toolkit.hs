@@ -19,22 +19,26 @@ module Sentinel.Toolkit
 
     -- * Helper for tool execution callback
     makeRunDataTool,
+
+    -- * Verification Support
+    withVerification,
+    extractVerifiableClaims,
   )
 where
 
-import Data.Aeson (Value, toJSON)
+import Data.Aeson (Value)
 import Data.Aeson.Text qualified as Aeson.Text
 import Data.IORef (readIORef)
 import Data.Map.Strict qualified as M
 import Data.Text qualified as T
 import Data.Text.Lazy qualified as T.Lazy
 import Pre
-import Sentinel.Context (emptyContextDecls)
+import Sentinel.Context (ContextDecls)
 import Sentinel.Facts qualified as Facts
 import Sentinel.Output qualified as Output
 import Sentinel.Sentinel (Sentinel (..), SentinelEnv (..), SentinelM, SentinelResult (..), UserQuestion (..), addFacts, getAskableStore, getContextStore)
 import Sentinel.Solver (runSolver)
-import Sentinel.Solver.Askable (emptyAskableRegistry)
+import Sentinel.Solver.Askable (AskableRegistry)
 import Sentinel.Solver.Combinators (SolverEnv (..), emptySolverState, withRule)
 import Sentinel.Solver.ToolBindings (ToolBindingRegistry)
 import Sentinel.Solver.Types
@@ -42,6 +46,7 @@ import Sentinel.Solver.Types
     BaseFact,
     ContextBlock (..),
     FailurePath (..),
+    Proof (..),
     SolverResult (..),
     SolverSuccess (..),
   )
@@ -61,7 +66,11 @@ data Toolkit db = Toolkit
     -- | System prompt for the LLM
     systemPrompt :: Text,
     -- | Tool bindings for the solver (predicate -> tool mappings)
-    toolBindings :: ToolBindingRegistry
+    toolBindings :: ToolBindingRegistry,
+    -- | Askable predicate declarations (user-confirmable facts)
+    askables :: AskableRegistry,
+    -- | Context variable declarations (conversational focus)
+    contextDecls :: ContextDecls
   }
 
 --------------------------------------------------------------------------------
@@ -140,8 +149,8 @@ guardedCallImpl toolkit toolName args = do
       guardResult <- evaluateToolGuard toolkit tool args
 
       case guardResult of
-        ToolGuardPassed -> do
-          liftIO $ putDispLn (Output.GuardPass toolName)
+        ToolGuardPassed proofs -> do
+          liftIO $ putDispLn (Output.GuardPass toolName proofs)
           -- Execute the tool
           result <- runExceptT (tool.execute args)
           case result of
@@ -162,7 +171,7 @@ guardedCallImpl toolkit toolName args = do
 
 -- | Result of evaluating any type of tool guard.
 data ToolGuardResult
-  = ToolGuardPassed
+  = ToolGuardPassed (NonEmpty SolverSuccess) -- ^ Carry the proof(s)
   | ToolGuardDenied Text
   | ToolGuardNeedsInput UserQuestion
   deriving stock (Show, Eq)
@@ -176,7 +185,13 @@ evaluateToolGuard ::
 evaluateToolGuard toolkit tool args = do
   case tool.guard of
     NoGuard ->
-      pure ToolGuardPassed
+      let noGuardSuccess =
+            SolverSuccess
+              { bindings = M.empty,
+                proof = RuleApplied "no_guard" [],
+                reason = "no_guard"
+              }
+       in pure $ ToolGuardPassed (noGuardSuccess :| [])
     SolverGuardT guardName guardFn -> do
       -- Use the solver-based guard evaluation via runSolver
       sentinelEnv <- ask
@@ -188,8 +203,8 @@ evaluateToolGuard toolkit tool args = do
       let solverEnv =
             SolverEnv
               { toolBindings = toolkit.toolBindings,
-                askables = emptyAskableRegistry,
-                contextDecls = emptyContextDecls,
+                askables = toolkit.askables,
+                contextDecls = toolkit.contextDecls,
                 contextStore = ctxStore,
                 invokeDataTool = \tName tArgs ->
                   runReaderT (makeRunDataToolForSolver toolkit tName tArgs) sentinelEnv
@@ -198,7 +213,9 @@ evaluateToolGuard toolkit tool args = do
 
       -- Wrap the guard function to produce SolverSuccess
       let solverAction = withRule guardName $ do
-            proof <- guardFn args
+            innerProof <- guardFn args
+            -- Wrap the inner proof with the guard name for hierarchy
+            let proof = RuleApplied guardName [innerProof]
             pure
               SolverSuccess
                 { bindings = M.empty,
@@ -208,8 +225,8 @@ evaluateToolGuard toolkit tool args = do
 
       (result, _finalState) <- liftIO $ runSolver solverEnv initState solverAction
       case result of
-        Success _ ->
-          pure ToolGuardPassed
+        Success successes ->
+          pure $ ToolGuardPassed successes
         BlockedOnContext block ->
           -- Convert context block to user question
           let s = block.slot
@@ -230,11 +247,14 @@ evaluateToolGuard toolkit tool args = do
           pure $ ToolGuardDenied (formatSolverFailures failures)
 
 -- | Create a data tool callback for the solver.
+--
+-- Returns the produced facts directly so the solver can add them to its store.
+-- Logs tool invocations for debugging visibility.
 makeRunDataToolForSolver ::
   Toolkit db ->
   Text ->
   Value ->
-  SentinelM db (Either Text Value)
+  SentinelM db (Either Text [BaseFact])
 makeRunDataToolForSolver toolkit toolName args =
   case lookupTool toolName toolkit of
     Nothing -> pure $ Left $ "Unknown tool: " <> toolName
@@ -242,12 +262,18 @@ makeRunDataToolForSolver toolkit toolName args =
       | tool.category /= DataTool ->
           pure $ Left $ "Tool " <> toolName <> " is not a data tool"
       | otherwise -> do
+          -- Log the tool invocation (solver-initiated, not LLM-initiated)
+          liftIO $ putDispLn (Output.QueryExecution toolName (T.Lazy.toStrict $ Aeson.Text.encodeToLazyText args))
           result <- runExceptT (tool.execute args)
           case result of
-            Left err -> pure $ Left err
+            Left err -> do
+              liftIO $ putDispLn (Output.ToolError err)
+              pure $ Left err
             Right output -> do
-              -- Return the observation as JSON (simplified for now)
-              pure $ Right (toJSON output.observation)
+              -- Log the observation for debugging
+              liftIO $ putDispLn (Output.Observation output.observation)
+              -- Return the produced facts for the solver to use
+              pure $ Right output.producedFacts
 
 -- | Format solver failure paths for display.
 formatSolverFailures :: [FailurePath] -> Text
@@ -264,3 +290,110 @@ summarizeFactsImpl = do
   if null allFacts
     then pure "No facts established yet."
     else pure $ T.unlines $ "Known facts:" : fmap (("  - " <>) . renderDocPlain . disp) allFacts
+
+--------------------------------------------------------------------------------
+-- Verification Support
+--------------------------------------------------------------------------------
+
+-- | Instructions for the LLM to verify claims before stating them.
+verificationInstructions :: Toolkit db -> Text
+verificationInstructions tk =
+  T.unlines
+    [ "",
+      "VERIFICATION REQUIREMENT:",
+      "Before making claims about eligibility to the user, verify them first.",
+      "Available verification tools:",
+      T.unlines checkGuardDescriptions,
+      "Never state eligibility without verification."
+    ]
+  where
+    checkGuardDescriptions =
+      [ "- CheckGuard_" <> tool.name <> ": verify " <> guardName
+      | (guardName, tool) <- extractVerifiableClaims tk
+      ]
+
+-- | Extract verifiable claims from action tools with SolverGuardT guards.
+--
+-- Returns a list of (guardName, tool) pairs for tools that have solver guards.
+extractVerifiableClaims :: Toolkit db -> [(Text, Tool db)]
+extractVerifiableClaims tk =
+  [ (guardName, tool)
+  | tool <- tk.tools,
+    tool.category == ActionTool,
+    SolverGuardT guardName _ <- [tool.guard]
+  ]
+
+-- | Generate a CheckGuard tool for each guarded action tool.
+makeCheckGuardTools :: Toolkit db -> [Tool db]
+makeCheckGuardTools tk =
+  [ makeCheckGuardTool tk guardName tool
+  | (guardName, tool) <- extractVerifiableClaims tk
+  ]
+
+-- | Create a single CheckGuard tool for a specific action tool.
+makeCheckGuardTool :: Toolkit db -> Text -> Tool db -> Tool db
+makeCheckGuardTool tk guardName actionTool =
+  Tool
+    { name = "CheckGuard_" <> actionTool.name,
+      description =
+        "Verify " <> guardName <> " before stating it to the user. "
+          <> "Returns whether the claim is verified, not verified, or needs more information. "
+          <> "Uses the same parameters as " <> actionTool.name <> ".",
+      params = actionTool.params, -- Reuse exact schema
+      category = DataTool,
+      guard = NoGuard,
+      execute = checkGuardExecute tk guardName
+    }
+
+-- | Execute a CheckGuard tool.
+checkGuardExecute ::
+  Toolkit db ->
+  Text ->
+  Value ->
+  ExceptT Text (SentinelM db) ToolOutput
+checkGuardExecute tk guardName args = do
+  -- Find the tool with this guard
+  tool <- lookup guardName (extractVerifiableClaims tk) ??: ("Unknown guard: " <> guardName)
+
+  -- Run the guard (reusing guard evaluation logic)
+  result <- lift $ runGuardOnly tk tool args
+
+  -- Display the eligibility check result to CLI
+  liftIO $ putDispLn $ case result of
+    ToolGuardPassed proofs -> Output.EligibilityVerified guardName proofs
+    ToolGuardDenied reason -> Output.EligibilityDenied guardName reason
+    ToolGuardNeedsInput question -> Output.EligibilityNeedsInfo guardName question.questionText
+
+  pure
+    ToolOutput
+      { observation = formatGuardResult guardName result,
+        producedFacts = [] -- CheckGuard is informational only
+      }
+
+-- | Run a tool's guard without executing the tool.
+--
+-- This is used by CheckGuard tools to verify claims without side effects.
+runGuardOnly :: Toolkit db -> Tool db -> Value -> SentinelM db ToolGuardResult
+runGuardOnly toolkit tool args = evaluateToolGuard toolkit tool args
+
+-- | Format the guard result for display to the LLM.
+formatGuardResult :: Text -> ToolGuardResult -> Text
+formatGuardResult claimName = \case
+  ToolGuardPassed (firstProof :| _) ->
+    "VERIFIED: " <> claimName <> " is satisfied. Reason: " <> firstProof.reason
+  ToolGuardDenied reason ->
+    "NOT VERIFIED: " <> claimName <> " failed. Reason: " <> reason
+  ToolGuardNeedsInput question ->
+    "NEEDS INFO: " <> question.questionText
+
+-- | Add verification support to a toolkit.
+--
+-- This adds CheckGuard tools (one per guarded action) and verification
+-- instructions to the system prompt.
+withVerification :: Toolkit db -> Toolkit db
+withVerification tk =
+  tk
+    { tools = makeCheckGuardTools tk <> tk.tools,
+      systemPrompt = tk.systemPrompt <> verificationInstructions tk
+    }
+

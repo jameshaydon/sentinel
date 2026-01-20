@@ -35,8 +35,10 @@ import Examples.AirCanada.Refund (DeathCircumstance (..), SpecialException (..))
 import Examples.AirCanada.ToolBindings (airCanadaToolBindings)
 import Examples.AirCanada.Types
 import Pre
+import Sentinel.Context (emptyContextDecls)
 import Sentinel.Schema qualified as Schema
 import Sentinel.Sentinel (getDb, modifyDb)
+import Sentinel.Solver.Askable (emptyAskableRegistry)
 import Sentinel.Solver.Combinators (SolverM, failWith, oneOf, queryPredicate)
 import Sentinel.Solver.Types (BaseFact (..), Proof (..), Scalar (..))
 import Sentinel.Tool (Guard, Tool (..), ToolCategory (..), ToolGuard (..), ToolOutput (..))
@@ -58,7 +60,9 @@ airCanadaToolkit =
           processRefundTool
         ],
       systemPrompt = airCanadaSystemPrompt,
-      toolBindings = airCanadaToolBindings
+      toolBindings = airCanadaToolBindings,
+      askables = emptyAskableRegistry,
+      contextDecls = emptyContextDecls
     }
 
 --------------------------------------------------------------------------------

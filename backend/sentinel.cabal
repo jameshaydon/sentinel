@@ -14,6 +14,7 @@ library
   exposed-modules:
       Examples.AirCanada.Askables
       Examples.AirCanada.ContextDecls
+      Examples.AirCanada.Example
       Examples.AirCanada.MockDB
       Examples.AirCanada.Queries
       Examples.AirCanada.Refund
@@ -22,9 +23,15 @@ library
       Examples.AirCanada.ToolBindings
       Examples.AirCanada.Tools
       Examples.AirCanada.Types
+      Examples.AirLogic.Example
+      Examples.AirLogic.MockDB
+      Examples.AirLogic.ToolBindings
+      Examples.AirLogic.Tools
+      Examples.AirLogic.Types
       Pre
       Sentinel.Agent
       Sentinel.Context
+      Sentinel.Example
       Sentinel.Facts
       Sentinel.LLM
       Sentinel.Output

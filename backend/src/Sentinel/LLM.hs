@@ -48,7 +48,7 @@ defaultConfig key = do
     LLMConfig
       { clientEnv = clientEnv,
         apiKey = key,
-        model = "gpt-5-nano-2025-08-07"
+        model = "gpt-4.1-nano-2025-04-14"
       }
 
 --------------------------------------------------------------------------------

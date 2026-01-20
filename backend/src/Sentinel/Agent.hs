@@ -178,9 +178,9 @@ runAgent ::
   Text ->
   IO (Text, [Message], Int)
 runAgent config tools systemPrompt sentinel sentinelEnv history turnCount userQuery = do
+  putDispLn (Output.TurnStart turnCount userQuery)
   let newTurnCount = turnCount + 1
-  putDispLn (Output.TurnStart newTurnCount userQuery)
-  let env =
+      env =
         AgentEnv
           { config,
             tools,

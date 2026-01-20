@@ -15,10 +15,12 @@ module Sentinel.Output
     ResolutionAttempt (..),
     QueryExecution (..),
     NeedsUserInput (..),
+    EligibilityCheckResult (..),
   )
 where
 
 import Pre
+import Sentinel.Solver.Types (SolverSuccess (..))
 
 -- | Agent's internal reasoning/thinking
 data Thinking = Thinking {thought :: Text}
@@ -39,13 +41,11 @@ data FinalAnswer = FinalAnswer {answer :: Text}
   deriving stock (Show, Eq, Generic)
 
 instance Disp FinalAnswer where
-  disp (FinalAnswer answer) =
+  disp (FinalAnswer _answer) =
     nest 4
       $ vsep
         [ "",
-          subheader "## Final Answer",
-          "",
-          finalAnswer (wrappedText answer)
+          subheader "## Final Answer (LLM)"
         ]
 
 -- | Agent (LLM) using a tool
@@ -142,25 +142,29 @@ data TurnStart = TurnStart
   deriving stock (Show, Eq, Generic)
 
 instance Disp TurnStart where
-  disp (TurnStart turn query) =
+  disp (TurnStart turn _query) =
     vsep
       [ "",
-        header "# Turn" <+> iterationNum (pretty turn),
-        "",
-        label "User Query:" <+> userText (wrappedText query)
+        header "# Turn" <+> iterationNum (pretty turn)
       ]
 
 -- | Guard check passed
-data GuardPass = GuardPass {guardToolName :: Text}
+data GuardPass = GuardPass
+  { guardToolName :: Text,
+    guardProofs :: NonEmpty SolverSuccess
+  }
   deriving stock (Show, Eq, Generic)
 
 instance Disp GuardPass where
-  disp (GuardPass tool) =
-    nest 4
-      $ vsep
-        [ "",
-          successText "✓" <+> label "Guard passed for" <+> styledToolName (pretty tool)
-        ]
+  disp (GuardPass tool proofs) =
+    let (firstProof :| _) = proofs
+     in nest 4
+          $ vsep
+            [ "",
+              successText "✓" <+> label "Guard passed for" <+> styledToolName (pretty tool),
+              "",
+              indent 2 (disp firstProof)
+            ]
 
 -- | Guard check denied
 data GuardDenied = GuardDenied
@@ -230,3 +234,35 @@ instance Disp NeedsUserInput where
           "",
           wrappedText q
         ]
+
+-- | Result of an eligibility check (from CheckEligibility tool)
+data EligibilityCheckResult
+  = EligibilityVerified Text (NonEmpty SolverSuccess)
+  | EligibilityDenied Text Text
+  | EligibilityNeedsInfo Text Text
+  deriving stock (Show, Eq, Generic)
+
+instance Disp EligibilityCheckResult where
+  disp = \case
+    EligibilityVerified claim proofs ->
+      let (firstProof :| _) = proofs
+       in nest 4
+            $ vsep
+              [ successText "✓" <+> label "Verified:" <+> pretty claim,
+                "",
+                indent 2 (disp firstProof)
+              ]
+    EligibilityDenied claim reason ->
+      nest 4
+        $ vsep
+          [ errorText "✗" <+> label "Not verified:" <+> pretty claim,
+            "",
+            indent 2 (wrappedText reason)
+          ]
+    EligibilityNeedsInfo claim question ->
+      nest 4
+        $ vsep
+          [ label "?" <+> label "Needs info for:" <+> pretty claim,
+            "",
+            indent 2 (wrappedText question)
+          ]

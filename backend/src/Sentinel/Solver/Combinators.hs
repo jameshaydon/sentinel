@@ -47,6 +47,7 @@ module Sentinel.Solver.Combinators
     -- * State Accessors
     getPendingAskables,
     getPendingContextBlocks,
+    getFailedPaths,
     getCurrentRule,
   )
 where
@@ -83,8 +84,8 @@ data SolverEnv = SolverEnv
     -- | Current context values
     contextStore :: ContextStore,
     -- | Callback to invoke a data tool.
-    -- Takes tool name and JSON args, returns JSON result or error.
-    invokeDataTool :: Text -> Value -> IO (Either Text Value)
+    -- Takes tool name and JSON args, returns produced facts or error.
+    invokeDataTool :: Text -> Value -> IO (Either Text [BaseFact])
   }
 
 --------------------------------------------------------------------------------
@@ -106,7 +107,9 @@ data SolverState = SolverState
     -- | Askable predicates that blocked proof paths (recorded for reporting)
     pendingAskables :: [AskableBlock],
     -- | Context variables that blocked proof paths (recorded for reporting)
-    pendingContextBlocks :: [ContextBlock]
+    pendingContextBlocks :: [ContextBlock],
+    -- | Failed proof paths (recorded for diagnostic reporting)
+    failedPaths :: [FailurePath]
   }
   deriving stock (Show, Eq, Generic)
   deriving anyclass (ToJSON, FromJSON)
@@ -121,7 +124,8 @@ emptySolverState baseFacts askableFacts =
       currentRule = Nothing,
       currentReason = Nothing,
       pendingAskables = [],
-      pendingContextBlocks = []
+      pendingContextBlocks = [],
+      failedPaths = []
     }
 
 --------------------------------------------------------------------------------
@@ -181,7 +185,7 @@ queryPredicate predName inputArgs = do
         Nothing ->
           -- No tool binding - this predicate cannot be established
           failWith $ "No tool binding for predicate: " <> predName
-        Just ToolBinding {inputArity, toolName, buildArgs, extractFacts} -> do
+        Just ToolBinding {inputArity, toolName, buildArgs} -> do
           -- Validate we have enough input args
           when (length inputArgs < inputArity) $
             failWith $
@@ -200,9 +204,8 @@ queryPredicate predName inputArgs = do
           case toolResult of
             Left err ->
               failWith $ "Tool " <> toolName <> " failed: " <> err
-            Right resultJson -> do
-              -- Extract and store facts
-              let newFacts = extractFacts (take inputArity inputArgs) resultJson
+            Right newFacts -> do
+              -- Store all facts produced by the tool
               addFacts newFacts
 
               -- Find matching facts
@@ -414,9 +417,20 @@ appendProof proof = modify' $ \s ->
 
 -- | Fail with an error message.
 --
--- This uses LogicT's mzero, which allows backtracking to try alternatives.
+-- Records the failure reason in state for later diagnostic reporting,
+-- then uses LogicT's mzero to backtrack and try alternatives.
 failWith :: Text -> SolverM a
-failWith _msg = mzero
+failWith msg = do
+  ruleName <- gets (fromMaybe "unknown" . (.currentRule))
+  partialProof <- getCurrentProof
+  let failure =
+        FailurePath
+          { ruleName = ruleName,
+            reason = msg,
+            partialProof = partialProof
+          }
+  modify' $ \s -> s {failedPaths = failure : s.failedPaths}
+  mzero
 
 --------------------------------------------------------------------------------
 -- State Accessors
@@ -429,6 +443,10 @@ getPendingAskables s = s.pendingAskables
 -- | Get pending context blocks from solver state.
 getPendingContextBlocks :: SolverState -> [ContextBlock]
 getPendingContextBlocks s = s.pendingContextBlocks
+
+-- | Get failed proof paths from solver state.
+getFailedPaths :: SolverState -> [FailurePath]
+getFailedPaths s = s.failedPaths
 
 -- | Get current rule from solver state.
 getCurrentRule :: SolverState -> Maybe Text

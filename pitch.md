@@ -10,12 +10,12 @@ Current model alignment techniques broadly fail to provide soundness guarantees 
 
 # The Solution: A Formal Verification DSL
 
-We are building a logic-based DSL inspired by Prolog, Verse and Catala, designed to express business constraints as executable formal logic.
+We are building a logic-based DSL (inspired by Prolog, s(CASP) and Catala) designed to express business constraints as executable formal logic.
 
 * Isomorphic Policy Authoring: like Catala, the language syntax mirrors legal/policy text structures, enabling LLM-assisted formalization. This maintains a verified “chain of custody” where incremental changes in natural language policy map directly to updates in the rulebase. This language allows for companies to maintain policy as code. We call this a “rulebase”.  
 * The Logic Solver: Unlike standard RAG (Retrieval-Augmented Generation), our engine does not rely only on feeding natural language rules into the context window for interpretation. Instead, the LLM interacts with the outside world while also submitting abstract queries to our logic solver, for any action it may want to perform, or data it may want access to.  
   * Input: The LLM proposes an intent (e.g., “offer refund”).  
-  * Verification: The solver checks satisfiability against the formal rule set.  
+  * Verification: The solver checks satisfiability against the formal rule set. If satisfied, returns an audit trace.  
   * Rejection Handling: If the intent violates policy, the solver returns a counter-factual trace or a set of sub-goals (e.g., "Missing precondition: flight\_cancelled or bereavement\_proof").  
 * Hallucination firewall: The solver rejects literal value injection. The LLM cannot assert “flight.time \= 08:00"; it must pass a reference to a trusted oracle (e.g., a database capability via MCP).
 
@@ -39,9 +39,11 @@ There are several components to this:
 * Meta-level verification. Specialised formal methods tools which continuously check and prove meta-properties about the ruleset. E.g.  
   * The ruleset is in compliance with some EU regulations.  
   * The ruleset never issues refunds of more than 500USD without human approval.  
+  * No redundant rules.  
   * The ruleset doesn’t have contradictions, and doesn't get stuck. E.g. finding conflicts such as:  
     * “VIP customers get instant refunds for items under 500USD”  
     * “There are never any refunds over 300USD without human agent approval”  
+  * Why it’s needed: the rule-language is not as generally expressive as the “meta property” language, because it has to be executable/tractable during agent interaction.  
 * Change Impact Analysis, analytics: given some proposed update to the ruleset, assess impact:  
   * Outcomes of previous conversations that change (E.g. “30% of automated refunds in the past year would not have been allowed”)  
   * This change would violate meta-policy “Fraud Check Level 2” (ties into above).  
@@ -75,12 +77,33 @@ The pressure to use solutions such as ours comes from:
 
 ## Competitive Landscape
 
-Most AI Guardrail systems are probabilistic in nature, and don’t offer the hard guarantees and determinism needed to operate in a regulated environment. We will focus on direct competitors.
+Most AI Guardrail systems are probabilistic in nature, and don’t offer the hard guarantees and determinism needed to operate in a regulated environment. This analysis is focused on direct competition that uses deterministic systems.
 
-### NVIDIA NeMo Guardrails
+### [NVIDIA NeMo Guardrails](https://github.com/NVIDIA-NeMo/Guardrails)
 
-TODO  
-Not very serious competition. No wholesale translation of massive policy docs.
+Despite marketing as "programmable" and "rule-based," NeMo Guardrails is fundamentally a framework system that relies heavily on model inference rather than formal reasoning. Its main utility is for keeping conversations on-topic, content-moderation, jailbreak detection, etc. Its fact-checking is explicitly probabilistic: retrieval-grounded validation asks whether claims are "supported by" retrieved documents, and LLM-as-judge patterns use a secondary model to evaluate factuality. NeMo remains in beta with official warnings against production deployment, though enterprises including Amdocs, Cerence AI, and Lowe's are experimenting with it. Open-sourced with 5K+ GitHub stars, it serves the probabilistic guardrailing use case well but does not compete in environments requiring deterministic policy enforcement or formal verification.
+
+### [Amazon Bedrock Automated Reasoning](https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails-automated-reasoning-checks.html) (ABAR)
+
+ABAR represents the most advanced production deployment of formal verification of AI guardrails. This service by amazon aims to check LLM generated responses using SMT solvers (satisfiability modulo theories, e.g. Z3). We believe ABAR has been designed for decision-making in domains such as issuing mortgages or insurance policies, where the structure of the rules is mostly a flat list of constraints. We think it is unsuitable for larger structured/nested policy documents.
+
+* SMT does not scale to very large complex policies. They acknowledge this:  
+  * Variable limits: Policies with excessive numbers of variables or overly complex rule interactions may hit processing limits or return TOO\_COMPLEX results.  
+  * While Z3 can be suitable for some domains, we believe bureaucratic regulations, policies and law are not well handled by SMT type tools. This is the raison d’etre of [Catala](https://catala-lang.org/) for example, or why [Blawx](https://law.mit.edu/pub/blawxrulesascodedemonstration/release/1) uses s(CASP).  
+* We believe the architecture we have come up with, guarding MCP, is more flexible. The solver can interactively request more information, whereas ABAR needs everything upfront.  
+* No exposed policy language. While we also aim for the commercial tier to generate rules automatically from natural language policy documents, this is primarily to solve the “blank page” problem. The formal language is then exposed to the policy domain experts via the isomorphic editor. Rules are stabilised via a back and forth between natural and formal language. We don’t believe large complex policies, that are critically important for correct agent decision-making, can rely entirely on automated interpretation of natural language documents.
+
+### [Invariantlabs](https://invariantlabs.ai/blog/guardrails)
+
+Invariant Labs, acquired by Snyk in 2025, is a direct competitor in the MCP guardrailing space. Their system provides rule-based constraints on LLM tool calls via a transparent proxy, architecturally similar to our approach. But they are targeting a fundamentally different space: security engineering vs policy-driven decision-making.
+
+Invariant's guardrailing language operates on \*traces\*: sequences of events (messages, tool calls, tool outputs) generated during agent execution. Rules follow a \`raise "error" if:\` pattern, where conditions match events and their properties. For example, \`(call: ToolCall)\` binds a variable to each tool call, and \`call is tool:send\_email({ to: "alice@mail.com" })\` matches specific invocations with regex-capable parameter matching. The language includes a flow operator (\`-\>\`) to express ordering constraints between events, enabling rules like "block email sends if the agent previously ingested a prompt-injected message." Built-in detectors for PII, secrets, prompt injection, and content moderation can be imported and composed with pattern rules. It's a well-designed DSL for security engineers, expressive enough for dataflow constraints and ML-augmented detection.
+
+* Invariant is fundamentally built for security engineers to detect violations. Rules pattern-match event traces after the LLM attempts an action, blocking bad behavior but providing no guidance toward valid alternatives. By contrast, Rulebase is a \*policy reasoning engine\*. Our logic solver proves satisfiability before actions and returns counter-factual traces on failure ("Missing precondition: flight\_cancelled OR bereavement\_proof"), enabling agents to resolve blockers rather than simply fail.  
+* Invariant evaluates rules at runtime only. Contradictory policies (e.g., "VIPs get instant refunds under $500" vs. "No refunds over $300 without approval") can coexist silently until they cause production failures. Rulebase performs static analysis at compile time, detecting logical contradictions, unreachable states, and meta-policy violations before deployment.  
+* On the authoring side, Invariant rules are code written by developers. There's no tooling for business or legal teams to manage policies. Our isomorphic editor maintains bidirectional traceability between natural language documents and formal rules, enabling domain experts to author, review, and run impact analysis on policy changes.
+
+The Snyk acquisition validates enterprise demand for deterministic AI guardrails, but Snyk's core business is developer security tooling. We expect Invariant to remain positioned for engineering teams rather than evolving toward regulatory compliance workflows or business-user policy governance. This leaves our target enterprise segment underserved. In short: Invariant blocks bad actions for security teams. We unblock decision-making capabilities for legal, compliance, and business teams managing policy at scale.
 
 ### [Galini.ai](http://Galini.ai)
 
@@ -90,19 +113,6 @@ YC cohort 2024
 Most direct competitor in terms of the problem they are trying to solve.
 
 Unclear what their underlying tech /idea is. The founders don't have background in formal methods, languages, logic, so I'm guessing the approach is quite different.
-
-### [Amazon Bedrock Automated Reasoning](https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails-automated-reasoning-checks.html) (ABAR)
-
-TODO  
-Not as direct competitor as Galini, but still close. This service by amazon aims to check results by an LLM using SMT (satisfiability modulo theories, e.g. Z3). We believe ABAR has been designed for decision-making in domains such as issuing mortgages or insurance policies, where the structure of the rules is mostly a flat list of constraints. We think it is unsuitable for larger structured/nested policy documents.
-
-* SMT does not scale to very large complex policies. They acknowledge this:  
-  * Variable limits: Policies with excessive numbers of variables or overly complex rule interactions may hit processing limits or return TOO\_COMPLEX results.  
-* (This is why Catala was designed for example, Z3 is not suitable for encoding law.)  
-* We believe the architecture we have come up with, guarding MCP, is more flexible. The solver can interactively request more information, whereas ABAR needs everything upfront.  
-* No exposed policy language. While we also aim for the commercial tier to generate rules automatically from natural language policy documents, this is primarily to solve the “blank page” problem. The formal language is then exposed to the policy domain experts via the isomorphic editor. Rules are stabilised via a back and forth between natural and formal language.  
-* For fragments of the policy that are more suited to SMT, automated theorem provers, our (open source) solver can use those as well. We think formal policy language and the solver should be open source for developer buy-in. The value we bring is in the policy management platform built on top of an exposed policy language, which validates the policy, checks for contradictions, etc. By contrast, ABAR ingests natural language directly, and would produce bad results for any lengthy terms and conditions document:  
-  * “Document complexity: Source documents should be well-structured with clear, unambiguous rules. Highly complex documents with nested conditions or contradictory statements may not extract cleanly into formal logic. Input documents are limited to 5Mb in size and 50,000 characters. You can split larger documents and merge each section into your policy. Images and tables in documents also impact the number of input characters.”
 
 # Team
 

@@ -120,16 +120,18 @@ runSolver env initState solver = do
             pure (BlockedOnAskable block, finalState)
           [] ->
             -- No pending blocks - all paths truly failed
-            pure
-              ( Failure
-                  [ FailurePath
-                      { ruleName = fromMaybe "unknown" finalState.currentRule,
-                        reason = "No proof path succeeded",
-                        partialProof = Nothing
-                      }
-                  ],
-                finalState
-              )
+            -- Use the recorded failure paths for detailed diagnostics
+            let failures = case getFailedPaths finalState of
+                  [] ->
+                    -- Shouldn't happen, but fallback to generic message
+                    [ FailurePath
+                        { ruleName = fromMaybe "unknown" finalState.currentRule,
+                          reason = "No proof path succeeded",
+                          partialProof = Nothing
+                        }
+                    ]
+                  fps -> fps
+             in pure (Failure failures, finalState)
 
 -- | Run a solver query with explicit initial facts.
 --
