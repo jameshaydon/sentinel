@@ -48,10 +48,10 @@ import Sentinel.JSON (extractString)
 import Sentinel.Schema qualified as Schema
 import Sentinel.Sentinel (getDb)
 import Sentinel.Solver.Askable (AskableDecl (..), AskableRegistry, EvidenceType (..), declareAskable, emptyAskableRegistry)
-import Sentinel.Solver.Combinators (SolverM, extractArg, oneOf, queryPredicate, require)
+import Sentinel.Solver.Combinators (SolverM, askable, extractArg, oneOf, queryPredicate, require)
 import Sentinel.Solver.Types (BaseFact (..), Proof (..), Scalar (..))
 import Sentinel.Tool (Guard, Tool (..), ToolCategory (..), ToolGuard (..), ToolOutput (..))
-import Sentinel.Toolkit (Toolkit (..))
+import Sentinel.Toolkit (Toolkit (..), askUserAskableTool)
 
 --------------------------------------------------------------------------------
 -- Toolkit
@@ -70,7 +70,8 @@ airLogicToolkit =
           getRebookingPolicyTool,
           issueFullRefundTool,
           issuePartialRefundTool,
-          issueVoucherTool
+          issueVoucherTool,
+          askUserAskableTool
         ],
       systemPrompt = airLogicSystemPrompt,
       toolBindings = airLogicToolBindings,
@@ -102,7 +103,6 @@ airLogicSystemPrompt =
       "2. Check refund eligibility through all possible paths before processing",
       "3. Clearly explain why a refund is approved or denied",
       "4. Offer alternative options (vouchers, rebooking) when refund is not available",
-      "5. Ask for confirmation before processing any refund",
       "",
       "Always be polite, professional, and empathetic with customers."
     ]
@@ -282,8 +282,11 @@ issueFullRefundTool =
   Tool
     { name = "IssueFullRefund",
       description =
-        "Process a full refund for an eligible booking. "
-          <> "Customer must be eligible via airline fault, EU261, or flexible fare. "
+        "Process a FULL refund (no fees deducted) for an eligible booking. "
+          <> "CHECK THIS FIRST when a customer requests a refund, as it provides the best outcome. "
+          <> "Eligibility: (1) Airline fault - flight cancelled or delayed >3 hours, "
+          <> "(2) EU261 protection - EU departure and delay >5 hours, "
+          <> "(3) Flexible fare class with >24 hours notice. "
           <> "Requires customer confirmation that they understand the booking will be cancelled.",
       params =
         Schema.objectSchema
@@ -316,9 +319,10 @@ issuePartialRefundTool =
   Tool
     { name = "IssuePartialRefund",
       description =
-        "Process a partial refund for an eligible booking. "
-          <> "Customer must be eligible via standard fare (> 72 hours advance) or bereavement. "
-          <> "A $150 cancellation fee will be deducted. "
+        "Process a PARTIAL refund ($150 fee deducted) for an eligible booking. "
+          <> "Only use this if full refund is not available - this is for voluntary cancellations. "
+          <> "Eligibility: (1) Standard fare class with >72 hours until departure, "
+          <> "(2) Bereavement with documentation. "
           <> "Requires customer confirmation that they understand the booking will be cancelled.",
       params =
         Schema.objectSchema
@@ -415,7 +419,10 @@ fullRefundGuard args = do
           pure $ RuleApplied "eligible_for_refund(full, flexible_fare)" [proof]
       ]
 
-  pure $ RuleApplied "full_refund_eligibility" [eligibilityProof]
+  -- Require user confirmation before proceeding
+  confirmProof <- askable "user_confirms_cancellation_understanding" [bookingId]
+
+  pure $ RuleApplied "full_refund_eligibility" [eligibilityProof, confirmProof]
 
 -- | Prove airline_at_fault(B): flight cancelled or delay > 180 minutes (3 hours).
 airlineFaultProof :: Scalar -> SolverM Proof
@@ -498,7 +505,10 @@ partialRefundGuard args = do
           pure $ RuleApplied "eligible_for_refund(partial, bereavement)" [proof]
       ]
 
-  pure $ RuleApplied "partial_refund_eligibility" [eligibilityProof]
+  -- Require user confirmation before proceeding
+  confirmProof <- askable "user_confirms_cancellation_understanding" [bookingId]
+
+  pure $ RuleApplied "partial_refund_eligibility" [eligibilityProof, confirmProof]
 
 -- | Prove fare_allows_refund(B, partial): fare class is Standard and > 72 hours until departure.
 standardFareProof :: Scalar -> SolverM Proof
@@ -542,12 +552,16 @@ voucherGuard args = do
   fareCheck <- require (fareClass == ScStr "Basic") "fare_class == Basic"
   let fareProof = RuleApplied "basic_fare_class" [FactUsed fareClassFact, fareCheck]
 
-  -- In a full implementation, this would also check:
-  -- - user_claims_medical_emergency(current_user)
-  -- - user_confirms_upload_documentation(current_user, "medical_certificate")
-  -- - user_accepts_voucher_terms(current_user)
+  -- User must claim medical emergency
+  medicalProof <- askable "user_claims_medical_emergency" [bookingId]
 
-  let eligibilityProof = RuleApplied "fare_allows_refund(voucher)" [fareProof]
+  -- User must confirm they will upload medical documentation
+  docProof <- askable "user_confirms_upload_documentation" [bookingId, ScStr "medical_certificate"]
+
+  -- User must accept voucher terms and conditions
+  termsProof <- askable "user_accepts_voucher_terms" [bookingId]
+
+  let eligibilityProof = RuleApplied "fare_allows_refund(voucher)" [fareProof, medicalProof, docProof, termsProof]
 
   pure $ RuleApplied "voucher_eligibility" [eligibilityProof]
 

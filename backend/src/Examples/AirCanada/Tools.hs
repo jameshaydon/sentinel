@@ -30,7 +30,6 @@ module Examples.AirCanada.Tools
     -- * Query Tools
     queryEligibilityTool,
     establishContextTool,
-    establishAskableTool,
 
     -- * Askables
     airCanadaAskables,
@@ -47,7 +46,6 @@ module Examples.AirCanada.Tools
   )
 where
 
-import Data.Aeson qualified as Aeson
 import Data.Text qualified as T
 import Examples.AirCanada.MockDB (attemptRefund, getBooking, getFlight, listBookingsForPassenger)
 import Examples.AirCanada.Refund (DeathCircumstance (..), SpecialException (..))
@@ -57,12 +55,12 @@ import Pre
 import Sentinel.Context (ContextDecl (..), ContextDecls, SeedSpec (..), declareContext, emptyContextDecls)
 import Sentinel.JSON (extractString)
 import Sentinel.Schema qualified as Schema
-import Sentinel.Sentinel (getDb, modifyDb, setAskableFact, setContextValue)
+import Sentinel.Sentinel (getDb, modifyDb, setContextValue)
 import Sentinel.Solver.Askable (AskableDecl (..), AskableRegistry, EvidenceType (..), declareAskable, emptyAskableRegistry)
 import Sentinel.Solver.Combinators (SolverM, andAll, askable, contextVar, extractArg, oneOf, queryPredicate, require)
 import Sentinel.Solver.Types (BaseFact (..), Proof (..), Scalar (..))
 import Sentinel.Tool (Guard, Tool (..), ToolCategory (..), ToolGuard (..), ToolOutput (..))
-import Sentinel.Toolkit (Toolkit (..))
+import Sentinel.Toolkit (Toolkit (..), askUserAskableTool)
 
 --------------------------------------------------------------------------------
 -- Toolkit
@@ -80,7 +78,7 @@ airCanadaToolkit =
           processRefundTool,
           queryEligibilityTool,
           establishContextTool,
-          establishAskableTool
+          askUserAskableTool
         ],
       systemPrompt = airCanadaSystemPrompt,
       toolBindings = airCanadaToolBindings,
@@ -330,77 +328,6 @@ establishContextTool =
               producedFacts = []
             }
     }
-
--- | Tool for recording user confirmation of an askable predicate.
---
--- When the solver blocks on an askable predicate (e.g., @user_claims_bereavement@),
--- the LLM asks the user the corresponding question and then calls this tool
--- to record their response.
-establishAskableTool :: Tool db
-establishAskableTool =
-  Tool
-    { name = "EstablishAskable",
-      description =
-        "Record the user's response to an askable predicate. "
-          <> "Use this after asking the user a confirmation question. "
-          <> "Example: EstablishAskable(predicate='user_claims_bereavement', "
-          <> "arguments=['current_user'], confirmed=true)",
-      params =
-        Schema.objectSchema
-          [ ("predicate", Schema.stringProp "The askable predicate name"),
-            ("arguments", Schema.stringProp "JSON array of arguments (as strings)"),
-            ("confirmed", Schema.enumProp ["true", "false"] "Whether the user confirmed")
-          ]
-          ["predicate", "confirmed"],
-      category = ActionTool, -- Recording confirmations is an action
-      guard = NoGuard,
-      execute = \args -> do
-        predicate <- extractString "predicate" args ??: "Missing 'predicate' parameter"
-        confirmedStr <- extractString "confirmed" args ??: "Missing 'confirmed' parameter"
-        let confirmed = confirmedStr == "true"
-
-        -- Parse arguments (optional, defaults to empty)
-        let arguments = parseArguments (extractString "arguments" args)
-
-        -- Record the askable fact in the Sentinel's askable fact store
-        lift $ setAskableFact predicate arguments confirmed
-
-        pure
-          ToolOutput
-            { observation =
-                "Askable fact recorded: "
-                  <> predicate
-                  <> "("
-                  <> showArgs arguments
-                  <> ") = "
-                  <> (if confirmed then "confirmed" else "denied"),
-              producedFacts = []
-            }
-    }
-  where
-    -- Parse a JSON array of strings into Scalars
-    parseArguments :: Maybe Text -> [Scalar]
-    parseArguments Nothing = []
-    parseArguments (Just jsonStr) =
-      case Aeson.decode (fromString (T.unpack jsonStr)) of
-        Just (Aeson.Array arr) ->
-          mapMaybe jsonToScalar (toList arr)
-        _ -> []
-
-    jsonToScalar :: Aeson.Value -> Maybe Scalar
-    jsonToScalar (Aeson.String s) = Just (ScStr s)
-    jsonToScalar (Aeson.Number n) = Just (ScNum (realToFrac n))
-    jsonToScalar (Aeson.Bool b) = Just (ScBool b)
-    jsonToScalar _ = Nothing
-
-    showArgs :: [Scalar] -> Text
-    showArgs [] = ""
-    showArgs scalarArgs = T.intercalate ", " (showScalar <$> scalarArgs)
-
-    showScalar :: Scalar -> Text
-    showScalar (ScStr s) = s
-    showScalar (ScNum n) = fromString (show n)
-    showScalar (ScBool b) = if b then "true" else "false"
 
 --------------------------------------------------------------------------------
 -- Guards

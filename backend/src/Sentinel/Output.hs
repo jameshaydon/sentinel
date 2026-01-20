@@ -16,6 +16,10 @@ module Sentinel.Output
     QueryExecution (..),
     NeedsUserInput (..),
     EligibilityCheckResult (..),
+
+    -- * Askable UX Types
+    AskableQuestion (..),
+    AskableAssessmentSummary (..),
   )
 where
 
@@ -179,5 +183,63 @@ instance Disp EligibilityCheckResult where
       let hdr = errorText "✗" <+> label "Not verified:" <+> pretty claim
        in section 4 hdr (indent 2 (wrappedText reason))
     EligibilityNeedsInfo claim question ->
-      let hdr = label "?" <+> label "Needs info for:" <+> pretty claim
-       in section 4 hdr (indent 2 (wrappedText question))
+      let hdr = label "⏸" <+> label "Blocked on askable:" <+> pretty claim
+       in section 4 hdr $
+            vsep
+              [ dimText "(Solver needs user confirmation before this can be verified)",
+                "",
+                label "Question:" <+> wrappedText question
+              ]
+
+--------------------------------------------------------------------------------
+-- Askable UX Types
+--------------------------------------------------------------------------------
+
+-- | A single askable question being presented to the user.
+-- Used when the AskUserAskable tool is called.
+data AskableQuestion = AskableQuestion
+  { askablePredicate :: Text,
+    askableQuestionText :: Text
+  }
+  deriving stock (Show, Eq, Generic)
+
+instance Disp AskableQuestion where
+  disp (AskableQuestion predName q) =
+    section 4 (label "? Asking User" <+> dimText "(askable fact)") $
+      vsep
+        [ label "Predicate:" <+> pretty predName,
+          label "Question:" <+> wrappedText q
+        ]
+
+-- | Summary of askable assessment results.
+-- Displayed after the assessment side-session completes.
+-- Takes: list of questions asked, user response, and list of (predicate, result) pairs.
+data AskableAssessmentSummary a b = AskableAssessmentSummary
+  { assessedQuestions :: [a], -- PendingAskable or similar
+    userResponseText :: Text,
+    assessmentResults :: [(Text, [b], Maybe Bool)] -- (predicate, args, confirmed/denied/ambiguous)
+  }
+  deriving stock (Show, Eq, Generic)
+
+-- | Helper to display assessment result status
+assessmentStatus :: Maybe Bool -> Doc Ann
+assessmentStatus = \case
+  Just True -> successText "confirmed"
+  Just False -> errorText "denied"
+  Nothing -> dimText "ambiguous"
+
+instance Disp (AskableAssessmentSummary a b) where
+  disp summary =
+    section
+      4
+      (subheader "## Side-Conversation Assessment Complete" <+> dimText "(askable facts established)")
+      $ vsep
+        [ label "User said:" <+> "\"" <> wrappedText summary.userResponseText <> "\"",
+          "",
+          label "Facts established:",
+          indent 2 $
+            vsep
+              [ label "•" <+> pretty predName <> ":" <+> assessmentStatus mConfirmed
+              | (predName, _args, mConfirmed) <- summary.assessmentResults
+              ]
+        ]

@@ -12,6 +12,7 @@ where
 
 import Control.Monad.State.Strict
 import Data.Aeson qualified as Aeson
+import Data.Text qualified as T
 import Data.Text.Encoding qualified as T.Encoding
 import Data.Vector qualified as Vector
 import OpenAI.V1.Chat.Completions qualified as Chat
@@ -20,8 +21,9 @@ import Pre
 import Sentinel.LLM (Message (..))
 import Sentinel.LLM qualified as LLM
 import Sentinel.Output qualified as Output
-import Sentinel.Sentinel (Sentinel, SentinelEnv, SentinelResult (..))
+import Sentinel.Sentinel (PendingAskableInfo (..), Sentinel, SentinelEnv, SentinelResult (..))
 import Sentinel.Sentinel qualified as Sentinel
+import Sentinel.Solver.Types (Scalar)
 import Sentinel.Tool qualified as Tool
 
 -- Note: fact type parameter has been removed from Sentinel types.
@@ -55,6 +57,7 @@ defaultConfig key = do
 
 -- | Agent state - only contains conversation-related state.
 -- Database and facts are now managed by Sentinel via SentinelEnv.
+-- Pending askables are managed via SentinelEnv.pendingAskables.
 data AgentState = AgentState
   { -- | Messages stored in reverse order (newest first) for efficient prepending.
     messages :: [Message],
@@ -167,6 +170,9 @@ processToolCall (ToolCall.ToolCall_Function {id = callId, function = fn}) = do
 -- - Response text
 -- - Updated message history
 -- - Updated turn count
+--
+-- Note: Pending askables (questions awaiting user response) are managed in
+-- SentinelEnv.pendingAskables, which persists across turns.
 runAgent ::
   AgentConfig ->
   [Tool.LLMTool] ->
@@ -194,8 +200,133 @@ runAgent config tools systemPrompt sentinel sentinelEnv history turnCount userQu
             turnCount = newTurnCount,
             iterationCount = 0
           }
-  (response, finalState) <- runAgentM env initialState agentLoop
+  (response, finalState) <- runAgentM env initialState agentLoopWithAskableAssessment
   pure (response, finalState.messages, finalState.turnCount)
+
+-- | Agent loop that first checks for pending askables and runs assessment.
+agentLoopWithAskableAssessment :: AgentM db Text
+agentLoopWithAskableAssessment = do
+  env <- ask
+  -- Read pending askables from SentinelEnv
+  pending <- liftIO $ Sentinel.runSentinelM env.sentinelEnv Sentinel.getPendingAskables
+  case pending of
+    [] -> agentLoop -- No pending askables, proceed normally
+    askables -> do
+      -- Get the user's response (it's the most recent message)
+      msgs <- use #messages
+      let userResponse = case msgs of
+            (UserMsg txt : _) -> txt
+            _ -> ""
+
+      -- Run the assessment side-session
+      assessmentResults <- liftIO $ runAskableAssessment env.config.llmConfig askables userResponse
+
+      -- Process assessment results
+      forM_ assessmentResults $ \(predName, args, mConfirmed) ->
+        case mConfirmed of
+          Just confirmed ->
+            -- Establish the fact in Sentinel
+            liftIO $ Sentinel.runSentinelM env.sentinelEnv (Sentinel.setAskableFact predName args confirmed)
+          Nothing ->
+            -- Ambiguous - fact remains unestablished
+            pure ()
+
+      -- Create summary message and inject into conversation
+      let summary = formatAskableSummary askables userResponse assessmentResults
+      liftIO $ putDispLn (Output.AskableAssessmentSummary askables userResponse assessmentResults)
+
+      -- Clear pending askables in SentinelEnv (assessment complete)
+      liftIO $ Sentinel.runSentinelM env.sentinelEnv Sentinel.clearPendingAskables
+
+      -- Inject summary as a system-style message that the LLM will see
+      -- We add it as a tool result with a synthetic call ID
+      let summaryMsg = AssistantMsg (Just summary) Nothing
+      #messages %= (summaryMsg :)
+
+      -- Continue with normal agent loop
+      agentLoop
+
+-- | Format askable assessment summary for the conversation.
+formatAskableSummary ::
+  [PendingAskableInfo] ->
+  Text ->
+  [(Text, [Scalar], Maybe Bool)] ->
+  Text
+formatAskableSummary askables userResponse results =
+  T.unlines
+    [ "Askable Assessment Summary:",
+      "Questions asked: " <> T.intercalate ", " (fmap (.pendingQuestion) askables),
+      "User response: " <> userResponse,
+      "Results:",
+      T.unlines
+        [ "  - " <> predName <> ": " <> case mConfirmed of
+            Just True -> "confirmed"
+            Just False -> "denied"
+            Nothing -> "ambiguous (not established)"
+        | (predName, _args, mConfirmed) <- results
+        ]
+    ]
+
+-- | Result of assessing a single askable.
+type AssessmentResult = (Text, [Scalar], Maybe Bool) -- (predicate, args, confirmed/denied/ambiguous)
+
+-- | Run the askable assessment side-session.
+--
+-- This spawns a focused LLM session that assesses the user's response
+-- and determines which askables were confirmed/denied.
+runAskableAssessment ::
+  LLM.LLMConfig ->
+  [PendingAskableInfo] ->
+  Text ->
+  IO [AssessmentResult]
+runAskableAssessment llmConfig askables userResponse = do
+  -- For each pending askable, run a focused assessment
+  forM askables $ \pending -> do
+    result <- assessSingleAskable llmConfig pending userResponse
+    pure (pending.pendingPredicate, pending.pendingArguments, result)
+
+-- | Assess a single askable predicate against the user's response.
+assessSingleAskable ::
+  LLM.LLMConfig ->
+  PendingAskableInfo ->
+  Text ->
+  IO (Maybe Bool)
+assessSingleAskable llmConfig pending userResponse = do
+  let assessmentPrompt =
+        T.unlines
+          [ "You are assessing whether a user's response answers a yes/no question.",
+            "",
+            "The user was asked:",
+            "  Question: " <> pending.pendingQuestion,
+            "  Predicate: " <> pending.pendingPredicate,
+            "",
+            "The user's response was:",
+            "  \"" <> userResponse <> "\"",
+            "",
+            "Based on the user's response, determine:",
+            "- If the user CLEARLY said yes/agreed/confirmed, respond with: CONFIRMED",
+            "- If the user CLEARLY said no/disagreed/declined, respond with: DENIED",
+            "- If the response is ambiguous, unclear, or doesn't address the question, respond with: AMBIGUOUS",
+            "",
+            "Respond with exactly one word: CONFIRMED, DENIED, or AMBIGUOUS"
+          ]
+
+  -- Make a simple LLM call for assessment
+  result <- LLM.callChatCompletion llmConfig assessmentPrompt [] []
+
+  case result of
+    Left _err -> pure Nothing -- On error, treat as ambiguous
+    Right msg -> case msg of
+      Chat.Assistant {assistant_content = Just content} ->
+        let normalizedContent = T.strip (T.toUpper content)
+         in pure $
+              if "CONFIRMED" `T.isInfixOf` normalizedContent
+                then Just True
+                else
+                  if "DENIED" `T.isInfixOf` normalizedContent
+                    then Just False
+                    else Nothing -- Ambiguous
+      _ -> pure Nothing
 
 agentLoop :: AgentM db Text
 agentLoop = do

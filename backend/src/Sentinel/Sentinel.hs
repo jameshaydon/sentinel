@@ -29,6 +29,12 @@ module Sentinel.Sentinel
     setAskableFact,
     getAskableStore,
 
+    -- * Pending Askable Operations
+    PendingAskableInfo (..),
+    addPendingAskable,
+    getPendingAskables,
+    clearPendingAskables,
+
     -- * Database Access
     getDb,
     modifyDb,
@@ -58,6 +64,22 @@ data UserQuestion = UserQuestion
     questionText :: Text,
     -- | Description of what fact we're trying to establish
     factDescription :: Text
+  }
+  deriving stock (Show, Eq, Generic)
+
+--------------------------------------------------------------------------------
+-- Pending Askable Information
+--------------------------------------------------------------------------------
+
+-- | Information about an askable question that was asked and is awaiting response.
+-- This is stored in SentinelEnv so tools can register pending askables.
+data PendingAskableInfo = PendingAskableInfo
+  { -- | The askable predicate name (e.g., "user_confirms_cancellation_understanding")
+    pendingPredicate :: Text,
+    -- | Arguments to the predicate (e.g., [ScStr "BK-2847"])
+    pendingArguments :: [Scalar],
+    -- | The human-readable question that was asked
+    pendingQuestion :: Text
   }
   deriving stock (Show, Eq, Generic)
 
@@ -93,7 +115,9 @@ data SentinelEnv db = SentinelEnv
     -- | The context store (context variables like booking_of_interest)
     contextStore :: IORef ContextStore,
     -- | The askable fact store (user confirmations)
-    askableStore :: IORef AskableFactStore
+    askableStore :: IORef AskableFactStore,
+    -- | Pending askables awaiting user response (set by AskUserAskable tool)
+    pendingAskables :: IORef [PendingAskableInfo]
   }
   deriving stock (Generic)
 
@@ -104,12 +128,14 @@ newSentinelEnv initialDb initialFacts = do
   factsRef <- newIORef initialFacts
   contextRef <- newIORef emptyContextStore
   askableRef <- newIORef emptyAskableFactStore
+  pendingRef <- newIORef []
   pure
     SentinelEnv
       { db = dbRef,
         facts = factsRef,
         contextStore = contextRef,
-        askableStore = askableRef
+        askableStore = askableRef,
+        pendingAskables = pendingRef
       }
 
 --------------------------------------------------------------------------------
@@ -227,3 +253,30 @@ getAskableStore :: SentinelM db AskableFactStore
 getAskableStore = do
   askRef <- asks (.askableStore)
   liftIO $ readIORef askRef
+
+--------------------------------------------------------------------------------
+-- Pending Askable Operations
+--------------------------------------------------------------------------------
+
+-- | Add a pending askable question awaiting user response.
+addPendingAskable :: Text -> [Scalar] -> Text -> SentinelM db ()
+addPendingAskable predName args questionText = do
+  pendingRef <- asks (.pendingAskables)
+  let info = PendingAskableInfo
+        { pendingPredicate = predName,
+          pendingArguments = args,
+          pendingQuestion = questionText
+        }
+  liftIO $ modifyIORef' pendingRef (info :)
+
+-- | Get all pending askables.
+getPendingAskables :: SentinelM db [PendingAskableInfo]
+getPendingAskables = do
+  pendingRef <- asks (.pendingAskables)
+  liftIO $ readIORef pendingRef
+
+-- | Clear all pending askables.
+clearPendingAskables :: SentinelM db ()
+clearPendingAskables = do
+  pendingRef <- asks (.pendingAskables)
+  liftIO $ modifyIORef' pendingRef (const [])

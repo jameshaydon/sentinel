@@ -18,6 +18,9 @@ module Sentinel.Toolkit
     -- * Verification Support
     withVerification,
     extractVerifiableClaims,
+
+    -- * Askable Protocol Tools
+    askUserAskableTool,
   )
 where
 
@@ -31,8 +34,10 @@ import Pre
 import Sentinel.Context (ContextDecls)
 import Sentinel.Facts (HasFactStore (..))
 import Sentinel.Facts qualified as Facts
+import Sentinel.JSON (extractScalarArray, extractString)
 import Sentinel.Output qualified as Output
-import Sentinel.Sentinel (Sentinel (..), SentinelEnv (..), SentinelM, SentinelResult (..), UserQuestion (..), getAskableStore, getContextStore)
+import Sentinel.Schema qualified as Schema
+import Sentinel.Sentinel (Sentinel (..), SentinelEnv (..), SentinelM, SentinelResult (..), UserQuestion (..), addPendingAskable, getAskableStore, getContextStore)
 import Sentinel.Solver (runSolver)
 import Sentinel.Solver.Askable (AskableRegistry)
 import Sentinel.Solver.Combinators (SolverEnv (..), SolverState (..), emptySolverState, withRule)
@@ -277,6 +282,20 @@ verificationInstructions tk =
       | (guardName, tool) <- extractVerifiableClaims tk
       ]
 
+-- | Instructions for handling askable predicates (NEEDS INFO responses).
+askableProtocolInstructions :: Text
+askableProtocolInstructions =
+  T.unlines
+    [ "",
+      "HANDLING 'NEEDS INFO' RESPONSES:",
+      "When a CheckGuard tool returns 'NEEDS INFO' with an askable predicate, you MUST:",
+      "1. Call the AskUserAskable tool with the predicate, arguments, and question",
+      "2. The question will be presented to the user for confirmation",
+      "3. Wait for the user's response - do NOT proceed until they answer",
+      "4. The user's response will be automatically assessed and the fact established",
+      "5. NEVER call EstablishAskable directly - always use AskUserAskable"
+    ]
+
 -- | Extract verifiable claims from action tools with SolverGuardT guards.
 --
 -- Returns a list of (guardName, tool) pairs for tools that have solver guards.
@@ -301,9 +320,9 @@ makeCheckGuardTool tk guardName actionTool =
   Tool
     { name = "CheckGuard_" <> actionTool.name,
       description =
-        "Verify " <> guardName <> " before stating it to the user. "
-          <> "Returns whether the claim is verified, not verified, or needs more information. "
-          <> "Uses the same parameters as " <> actionTool.name <> ".",
+        "Check eligibility for " <> actionTool.name <> " before attempting to execute it. "
+          <> "Returns whether eligible, not eligible, or needs more information. "
+          <> "Tool context: " <> actionTool.description,
       params = actionTool.params, -- Reuse exact schema
       category = DataTool,
       guard = NoGuard,
@@ -354,11 +373,67 @@ formatGuardResult claimName = \case
 -- | Add verification support to a toolkit.
 --
 -- This adds CheckGuard tools (one per guarded action) and verification
--- instructions to the system prompt.
+-- instructions to the system prompt, including askable protocol instructions.
 withVerification :: Toolkit db -> Toolkit db
 withVerification tk =
   tk
     { tools = makeCheckGuardTools tk <> tk.tools,
-      systemPrompt = tk.systemPrompt <> verificationInstructions tk
+      systemPrompt = tk.systemPrompt <> verificationInstructions tk <> askableProtocolInstructions
+    }
+
+--------------------------------------------------------------------------------
+-- Askable Protocol Tools
+--------------------------------------------------------------------------------
+
+-- | Tool to ask the user an askable question.
+--
+-- This tool is used when a guard is blocked on an askable predicate.
+-- Instead of the main LLM directly calling EstablishAskable, it calls this
+-- tool to present the question to the user. The user's response is then
+-- assessed by a separate LLM session.
+--
+-- The tool:
+-- 1. Displays the question with special UX
+-- 2. Records the pending askable in SentinelEnv
+-- 3. Returns a marker indicating the agent should pause for user response
+askUserAskableTool :: Tool db
+askUserAskableTool =
+  Tool
+    { name = "AskUserAskable",
+      description =
+        "Ask the user an askable question when a guard is blocked on an askable predicate. "
+          <> "Use this when a CheckGuard tool returns 'NEEDS INFO' with an askable predicate. "
+          <> "The question will be presented to the user for confirmation. "
+          <> "IMPORTANT: Only use this tool to ask the question - do NOT call EstablishAskable directly. "
+          <> "The user's response will be automatically assessed.",
+      params =
+        Schema.objectSchema
+          [ ("predicate", Schema.stringProp "The askable predicate name (e.g., 'user_confirms_cancellation_understanding')"),
+            ("arguments", Schema.arrayProp "Array of arguments for the predicate (e.g., [\"BK-2847\"])"),
+            ("question", Schema.stringProp "The question to ask the user")
+          ]
+          ["predicate", "question"],
+      category = ActionTool,
+      guard = NoGuard,
+      execute = \args -> do
+        predicate <- extractString "predicate" args ??: "Missing 'predicate' parameter"
+        question <- extractString "question" args ??: "Missing 'question' parameter"
+
+        let arguments = extractScalarArray "arguments" args
+
+        -- Display the askable question UX
+        liftIO $ putDispLn (Output.AskableQuestion predicate question)
+
+        -- Record the pending askable in SentinelEnv
+        lift $ addPendingAskable predicate arguments question
+
+        -- Return observation that signals to pause for user response
+        pure
+          ToolOutput
+            { observation =
+                "Question asked: " <> question <> "\n"
+                  <> "Awaiting user response. Do not proceed with this action until the user responds.",
+              producedFacts = []
+            }
     }
 
