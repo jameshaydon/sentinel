@@ -25,6 +25,7 @@ library
       Examples.AirLogic.Types
       Pre
       Sentinel.Agent
+      Sentinel.App
       Sentinel.Context
       Sentinel.Example
       Sentinel.Facts

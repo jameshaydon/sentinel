@@ -1,10 +1,7 @@
 roots = [
   "^Paths_",
-  # AirCanada example (all exports)
-  "^Examples\\.AirCanada\\.",
-  "^Examples.AirLogic.Example.airLogicExample$",
-  "^Sentinel.Example.runExample$",
-  "^Sentinel.Agent.defaultConfig$",
+  # App entry point (used by app/Main.hs)
+  "^Sentinel.App.main$",
   # Custom prelude utilities
   "^Pre\\.",
   # Test suite (test/Main.hs)
