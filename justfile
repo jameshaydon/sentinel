@@ -20,3 +20,8 @@ watch-haskell: hpack
 [group('build')]
 build: hpack
   cd backend && cabal build -O0
+
+# Run weeder to detect dead code
+[group('lint')]
+weeder: build
+  cd backend && weeder --hie-directory ".hie"

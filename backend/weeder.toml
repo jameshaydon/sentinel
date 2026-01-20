@@ -1,0 +1,16 @@
+roots = [
+  "^Paths_",
+  # AirCanada example (all exports)
+  "^Examples\\.AirCanada\\.",
+  "^Examples.AirLogic.Example.airLogicExample$",
+  "^Sentinel.Example.runExample$",
+  "^Sentinel.Agent.defaultConfig$",
+  # Custom prelude utilities
+  "^Pre\\.",
+  # Test suite (test/Main.hs)
+  "^Main.main$",
+]
+
+type-class-roots = true
+
+hie-directory = ".hie"

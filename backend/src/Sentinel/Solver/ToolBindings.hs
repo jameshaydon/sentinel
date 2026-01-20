@@ -21,7 +21,6 @@ module Sentinel.Solver.ToolBindings
     emptyToolBindingRegistry,
     registerBinding,
     lookupBinding,
-    allBindings,
   )
 where
 
@@ -148,7 +147,3 @@ registerBinding binding (ToolBindingRegistry bs) =
 -- | Look up a tool binding by predicate name.
 lookupBinding :: Text -> ToolBindingRegistry -> Maybe ToolBinding
 lookupBinding predName (ToolBindingRegistry bs) = M.lookup predName bs
-
--- | Get all registered bindings.
-allBindings :: ToolBindingRegistry -> [ToolBinding]
-allBindings (ToolBindingRegistry bs) = M.elems bs

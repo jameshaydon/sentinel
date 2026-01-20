@@ -14,8 +14,6 @@ module Sentinel.Context
     emptyContextStore,
     getContext,
     setContext,
-    clearContext,
-    allContextValues,
 
     -- * Context Establishment
     ContextEstablishment (..),
@@ -85,16 +83,6 @@ getContext slot store = (.value) <$> M.lookup slot store.established
 setContext :: Text -> ContextEstablishment -> ContextStore -> ContextStore
 setContext slot establishment store =
   store {established = M.insert slot establishment store.established}
-
--- | Clear a context variable.
-clearContext :: Text -> ContextStore -> ContextStore
-clearContext slot store =
-  store {established = M.delete slot store.established}
-
--- | Get all established context values.
-allContextValues :: ContextStore -> [(Text, Scalar)]
-allContextValues store =
-  [(k, v.value) | (k, v) <- M.toList store.established]
 
 --------------------------------------------------------------------------------
 -- Context Declarations

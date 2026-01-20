@@ -22,7 +22,6 @@ module Sentinel.Facts
     emptyAskableFactStore,
     addAskableFact,
     lookupAskableFact,
-    allAskableFacts,
   )
 where
 
@@ -128,8 +127,3 @@ addAskableFact predName args confirmed (AskableFactStore m) =
 lookupAskableFact :: Text -> [Scalar] -> AskableFactStore -> Maybe Bool
 lookupAskableFact predName args (AskableFactStore m) =
   M.lookup (predName, args) m
-
--- | Get all askable facts as (predicate, args, confirmed) tuples.
-allAskableFacts :: AskableFactStore -> [(Text, [Scalar], Bool)]
-allAskableFacts (AskableFactStore m) =
-  [(pred', args, confirmed) | ((pred', args), confirmed) <- M.toList m]
