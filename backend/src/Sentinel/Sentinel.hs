@@ -63,7 +63,11 @@ data UserQuestion = UserQuestion
   { -- | The question text to present to the user
     questionText :: Text,
     -- | Description of what fact we're trying to establish
-    factDescription :: Text
+    factDescription :: Text,
+    -- | The askable predicate name (if this question is for an askable)
+    askablePredicate :: Maybe Text,
+    -- | The arguments to the askable predicate (if applicable)
+    askableArguments :: Maybe [Scalar]
   }
   deriving stock (Show, Eq, Generic)
 

@@ -4,10 +4,10 @@ cradle:
       component: "lib:sentinel"
 
     - path: "app/Main.hs"
-      component: "sentinel:exe:sentinel"
+      component: "sentinel:exe:repl"
 
     - path: "app/Paths_sentinel.hs"
-      component: "sentinel:exe:sentinel"
+      component: "sentinel:exe:repl"
 
     - path: "test"
       component: "sentinel:test:all"

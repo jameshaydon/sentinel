@@ -48,8 +48,10 @@ import Sentinel.Solver.Types
     ContextBlock (..),
     FailurePath (..),
     Proof (..),
+    Scalar,
     SolverResult (..),
     SolverSuccess (..),
+    scalarToText,
   )
 import Sentinel.Tool (LLMTool, Tool (..), ToolCategory (..), ToolGuard (..), ToolOutput (..), toLLMTool)
 
@@ -204,14 +206,18 @@ evaluateToolGuard toolkit tool args = do
                 $ ToolGuardNeedsInput
                   UserQuestion
                     { questionText = "Please specify: " <> s,
-                      factDescription = "Context: " <> s
+                      factDescription = "Context: " <> s,
+                      askablePredicate = Nothing,
+                      askableArguments = Nothing
                     }
         BlockedOnAskable block ->
           pure
             $ ToolGuardNeedsInput
               UserQuestion
                 { questionText = block.question,
-                  factDescription = "Askable: " <> block.predicate
+                  factDescription = "Askable: " <> block.predicate,
+                  askablePredicate = Just block.predicate,
+                  askableArguments = Just block.arguments
                 }
         Failure failures ->
           pure $ ToolGuardDenied (formatSolverFailures failures)
@@ -368,7 +374,19 @@ formatGuardResult claimName = \case
   ToolGuardDenied reason ->
     "NOT VERIFIED: " <> claimName <> " failed. Reason: " <> reason
   ToolGuardNeedsInput question ->
-    "NEEDS INFO: " <> question.questionText
+    case (question.askablePredicate, question.askableArguments) of
+      (Just predName, Just args) ->
+        T.unlines
+          [ "NEEDS INFO: " <> question.questionText,
+            "Predicate: " <> predName,
+            "Arguments: " <> formatScalarList args
+          ]
+      _ ->
+        "NEEDS INFO: " <> question.questionText
+
+-- | Format a list of scalars for display.
+formatScalarList :: [Scalar] -> Text
+formatScalarList args = "[" <> T.intercalate ", " (scalarToText <$> args) <> "]"
 
 -- | Add verification support to a toolkit.
 --
