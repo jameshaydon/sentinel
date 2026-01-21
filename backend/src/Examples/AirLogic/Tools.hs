@@ -528,18 +528,11 @@ standardFareProof bookingId = do
   pure $ RuleApplied "fare_allows_refund(partial)" [fareProof, hoursProof]
 
 -- | Prove bereavement_eligible(B): user claims bereavement and confirms documentation.
--- Note: In a full implementation, this would use askable predicates.
 bereavementProof :: Scalar -> SolverM Proof
 bereavementProof bookingId = do
-  -- For now, this path always fails since we can't yet query askable predicates
-  -- In the full implementation, this would check:
-  -- - user_claims_bereavement(current_user)
-  -- - user_confirms_upload_documentation(current_user, "death_certificate")
-  claimFact <- queryPredicate "user_claims_bereavement" [bookingId] -- This will fail/block
-  let claimProof = RuleApplied "bereavement_claimed" [FactUsed claimFact]
-
-  -- Would also need documentation proof
-  pure $ RuleApplied "bereavement_eligible" [claimProof]
+  claimProof <- askable "user_claims_bereavement" [bookingId]
+  docProof <- askable "user_confirms_upload_documentation" [bookingId, ScStr "death_certificate"]
+  pure $ RuleApplied "bereavement_eligible" [claimProof, docProof]
 
 -- | Guard for voucher: eligible for Basic Economy with medical documentation.
 voucherGuard :: Guard
