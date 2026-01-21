@@ -34,8 +34,7 @@ dependencies:
   - transformers
   - bytestring
   - filepath
-  - directory
-  - comonad
+  - directory  
   - free
   - lens
   - generic-lens
@@ -44,31 +43,23 @@ dependencies:
   - pretty-simple
   - prettyprinter
   - prettyprinter-ansi-terminal
-  - generic-data
-  - text-short
-  - scientific
+  - generic-data    
   - extra
-  - recursion-schemes
-  - lattices
-  - graphviz
-  - time
-  - http-conduit
-  - http-client
-  - http-types
-  - random
+  - recursion-schemes  
+  - time  
   - haskeline
   - openai
   - servant-client
   - vector
   - repline
   - logict
-  - exceptions
+  - comonad
 
 library:
   source-dirs: src
 
 executables:
-  sentinel:
+  repl:
     main: Main.hs
     source-dirs: app
     ghc-options:

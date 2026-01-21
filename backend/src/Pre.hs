@@ -18,10 +18,8 @@ module Pre
     Generically (..),
     Generically1 (..),
     Text,
-    ShortText,
     Map,
     Set,
-    Scientific,
     FromJSON,
     FromJSON1,
     ToJSON,
@@ -109,7 +107,6 @@ import Data.Map.Strict (Map)
 import Data.Maybe
 import Data.Monoid (Ap (Ap, getAp))
 import Data.Proxy
-import Data.Scientific (Scientific)
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.String (IsString (..))
@@ -117,7 +114,6 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Lazy qualified as LazyText
 import Data.Text.Lazy.Encoding qualified as LazyText
-import Data.Text.Short (ShortText)
 import Data.Traversable
 import Data.Void
 import Debug.Pretty.Simple (pTraceShow)

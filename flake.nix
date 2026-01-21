@@ -31,6 +31,13 @@
             servant-client = hlib.overrideCabal super.servant-client (drv: {
               doCheck = false;
             });
+            openai = hlib.dontCheck (
+              self.callHackageDirect {
+                pkg = "openai";
+                ver = "2.2.1";
+                sha256 = "sha256-4JOUrXV4Zixu+T7q4O9V3mwacyG+t86L9htBPowlTC0=";
+              } { }
+            );
           };
         };
 
