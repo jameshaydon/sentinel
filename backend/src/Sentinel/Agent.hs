@@ -14,17 +14,22 @@ import Control.Monad.State.Strict
 import Data.Aeson qualified as Aeson
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as T.Encoding
-import Data.Vector qualified as Vector
+import Data.Vector qualified as V
 import OpenAI.V1.Chat.Completions qualified as Chat
 import OpenAI.V1.ToolCall qualified as ToolCall
 import Pre
+import Sentinel.Context (AskableSpec (..), ContextDecl (..), ContextStore)
 import Sentinel.LLM (Message (..))
 import Sentinel.LLM qualified as LLM
 import Sentinel.Output qualified as Output
-import Sentinel.Sentinel (PendingAskableInfo (..), Sentinel, SentinelEnv, SentinelResult (..))
+import Sentinel.Sentinel (Sentinel, SentinelEnv, SentinelResult (..))
 import Sentinel.Sentinel qualified as Sentinel
-import Sentinel.Solver.Types (Scalar)
+import Sentinel.Solver.Askable (AskableDecl (..), formatQuestion)
+import Sentinel.Solver.Types (Scalar (..), UserInputType (..), scalarToText)
+import Sentinel.Tool (SideSessionSpec (..))
 import Sentinel.Tool qualified as Tool
+import Sentinel.Toolkit (Toolkit)
+import Sentinel.Toolkit qualified as Toolkit
 
 -- Note: fact type parameter has been removed from Sentinel types.
 -- All facts are now stored as BaseFact in BaseFactStore.
@@ -57,12 +62,15 @@ defaultConfig key = do
 
 -- | Agent state - only contains conversation-related state.
 -- Database and facts are now managed by Sentinel via SentinelEnv.
--- Pending askables are managed via SentinelEnv.pendingAskables.
 data AgentState = AgentState
   { -- | Messages stored in reverse order (newest first) for efficient prepending.
     messages :: [Message],
     turnCount :: !Int,
-    iterationCount :: !Int
+    iterationCount :: !Int,
+    -- | Context variables that are currently blocked (need Ask tools)
+    blockedContextVars :: [Text],
+    -- | Askable predicates that are currently blocked (predicate name, arguments)
+    blockedAskables :: [(Text, [Scalar])]
   }
   deriving stock (Generic)
 
@@ -70,14 +78,16 @@ type AgentM db = ReaderT (AgentEnv db) (StateT AgentState IO)
 
 data AgentEnv db = AgentEnv
   { config :: AgentConfig,
-    -- | Tool definitions for LLM (schemas and descriptions).
+    -- | Base tool definitions for LLM (schemas and descriptions).
     tools :: [Tool.LLMTool],
     -- | System prompt for the LLM.
     systemPrompt :: Text,
     -- | Sentinel for guarded tool calls.
     sentinel :: Sentinel db,
     -- | Sentinel environment (shared state for db and facts).
-    sentinelEnv :: SentinelEnv db
+    sentinelEnv :: SentinelEnv db,
+    -- | The toolkit (needed for dynamic Ask tool generation).
+    toolkit :: Toolkit db
   }
 
 runAgentM :: AgentEnv db -> AgentState -> AgentM db a -> IO (a, AgentState)
@@ -110,12 +120,61 @@ callLLM llmTools = do
 -- Tool Execution (via Sentinel)
 --------------------------------------------------------------------------------
 
--- | Process a single tool call via Sentinel and return the result message.
+-- | Process a single tool call via Sentinel or handle dynamic Ask tools.
+-- Returns a message for the LLM with the tool result or block information.
 processToolCall :: ToolCall.ToolCall -> AgentM db Message
 processToolCall (ToolCall.ToolCall_Function {id = callId, function = fn}) = do
-  env <- ask
   let toolName = fn.name
       argsJson = fn.arguments
+
+  -- Check if this is a dynamic Ask tool (Ask_<name>)
+  if "Ask_" `T.isPrefixOf` toolName
+    then handleAskTool callId toolName
+    else handleRegularTool callId toolName argsJson
+
+-- | Handle a dynamic Ask tool call by triggering a side session.
+handleAskTool :: Text -> Text -> AgentM db Message
+handleAskTool callId toolName = do
+  env <- ask
+  let name = T.drop 4 toolName -- Remove "Ask_" prefix
+
+  -- Check if it's a blocked context variable or askable
+  blockedCtx <- use #blockedContextVars
+  blockedAsk <- use #blockedAskables
+
+  if name `elem` blockedCtx
+    then do
+      -- Context variable side session
+      case Toolkit.lookupContextDecl name env.toolkit.contextDecls of
+        Nothing -> pure $ ToolMsg callId ("ERROR: Unknown context variable: " <> name)
+        Just decl -> do
+          let spec = ContextSession name decl
+          summary <- runSideSession spec
+          -- Clear from blocked list
+          #blockedContextVars %= filter (/= name)
+          -- Clear from Sentinel's pending list too
+          liftIO $ Sentinel.runSentinelM env.sentinelEnv (Sentinel.clearPendingUserInput name)
+          pure $ ToolMsg callId summary
+    else case find (\(predName, _) -> predName == name) blockedAsk of
+      Just (predName, args) -> do
+        -- Askable side session
+        case Toolkit.lookupAskable predName env.toolkit.askables of
+          Nothing -> pure $ ToolMsg callId ("ERROR: Unknown askable predicate: " <> predName)
+          Just decl -> do
+            let spec = AskableSession predName decl args
+            summary <- runSideSession spec
+            -- Clear from blocked list
+            #blockedAskables %= filter ((/= predName) . fst)
+            -- Clear from Sentinel's pending list too
+            liftIO $ Sentinel.runSentinelM env.sentinelEnv (Sentinel.clearPendingUserInput predName)
+            pure $ ToolMsg callId summary
+      Nothing ->
+        pure $ ToolMsg callId ("ERROR: " <> name <> " is not currently blocked. Call the relevant action tool first.")
+
+-- | Handle a regular tool call through Sentinel.
+handleRegularTool :: Text -> Text -> Text -> AgentM db Message
+handleRegularTool callId toolName argsJson = do
+  env <- ask
 
   -- Decode the raw JSON string from OpenAI into a Value
   let mArgs = Aeson.decodeStrict (T.Encoding.encodeUtf8 argsJson) :: Maybe Aeson.Value
@@ -134,22 +193,189 @@ processToolCall (ToolCall.ToolCall_Function {id = callId, function = fn}) = do
         Denied reason -> do
           pure $ ToolMsg callId ("ERROR: " <> reason)
         AskUser question -> do
-          -- Return the question to the LLM so it can ask the user.
-          -- The LLM should:
-          -- 1. Ask the user the question
-          -- 2. Based on the response, call EstablishContext or EstablishAskable
-          -- 3. Retry the original tool call
-          pure $
-            ToolMsg callId $
-              "ACTION REQUIRED: I need more information before I can proceed.\n"
-                <> "Question: "
-                <> question.questionText
-                <> "\n"
-                <> "Context: "
-                <> question.factDescription
-                <> "\n"
-                <> "Please ask the user this question, then use the appropriate tool "
-                <> "(EstablishContext or EstablishAskable) to record their response."
+          -- Add to blocked list and return block information
+          addBlockedItem question
+          let blockInfo = formatBlockForLLM question
+          pure $ ToolMsg callId blockInfo
+
+-- | Add a blocked item to the state based on the question type.
+addBlockedItem :: Sentinel.UserQuestion -> AgentM db ()
+addBlockedItem question =
+  case (question.askablePredicate, question.askableArguments) of
+    (Just predName, Just args) ->
+      -- Askable predicate
+      #blockedAskables %= ((predName, args) :)
+    _ ->
+      -- Context variable - extract the name from factDescription
+      let ctxName = T.drop 9 question.factDescription -- Remove "Context: " prefix
+       in #blockedContextVars %= (ctxName :)
+
+-- | Format blocked user question for the LLM to understand what to do.
+formatBlockForLLM :: Sentinel.UserQuestion -> Text
+formatBlockForLLM question =
+  T.unlines
+    [ "BLOCKED: Guard cannot proceed without additional information.",
+      "",
+      "Type: " <> question.factDescription,
+      "Question: " <> question.questionText,
+      "",
+      case (question.askablePredicate, question.askableArguments) of
+        (Just predName, Just args) ->
+          "To resolve: Call Ask_" <> predName <> " to prompt the user."
+            <> "\n  Arguments: "
+            <> formatArgs args
+        _ ->
+          -- Context variable - extract the name from factDescription
+          let ctxName = T.drop 9 question.factDescription -- Remove "Context: " prefix
+           in "To resolve: Call Ask_" <> ctxName <> " to prompt the user."
+    ]
+  where
+    formatArgs args = "[" <> T.intercalate ", " (scalarToText <$> args) <> "]"
+
+--------------------------------------------------------------------------------
+-- Side Session
+--------------------------------------------------------------------------------
+
+-- | Run a synchronous side conversation session.
+--
+-- This prints the exact question to the user, waits for their response,
+-- then calls a small LLM session with only Set/Confirm/Deny tools to
+-- parse the response and establish the fact/context.
+runSideSession :: SideSessionSpec -> AgentM db Text
+runSideSession spec = do
+  env <- ask
+  let (question, sidePrompt) = case spec of
+        ContextSession name decl ->
+          let q = maybe ("Please specify " <> name) (.questionTemplate) decl.askable
+              p = formatContextSidePrompt decl q
+           in (q, p)
+        AskableSession _predName decl args ->
+          let q = formatQuestion decl.questionTemplate args
+              p = formatAskableSidePrompt decl q
+           in (q, p)
+
+  -- 1. Print exact question to user
+  liftIO $ putDispLn (Output.AskingUser question)
+
+  -- 2. Get user response via blocking stdin read
+  userResponse <- T.pack <$> liftIO getLine
+
+  -- 3. Call LLM with the side session prompt
+  let fullPrompt = sidePrompt userResponse
+  result <- liftIO $ LLM.callChatCompletion env.config.llmConfig fullPrompt [] []
+
+  -- 4. Process result
+  processSideSessionResult spec question userResponse result
+
+-- | Format the side session prompt for context variables.
+formatContextSidePrompt :: ContextDecl -> Text -> Text -> Text
+formatContextSidePrompt decl question userResponse =
+  T.unlines
+    [ "Extract the value from this user response.",
+      "",
+      "Question asked: " <> question,
+      "User response: " <> userResponse,
+      "",
+      "If the user provided a clear value for '" <> decl.name <> "',",
+      "respond with exactly: VALUE: <the value>",
+      "",
+      "If the response is unclear or doesn't provide the value,",
+      "respond with exactly: AMBIGUOUS",
+      "",
+      "Examples:",
+      "- User says 'The one to Paris, BK-123' -> VALUE: BK-123",
+      "- User says 'booking REF456' -> VALUE: REF456",
+      "- User says 'I'm not sure' -> AMBIGUOUS"
+    ]
+
+-- | Format the side session prompt for askable predicates.
+formatAskableSidePrompt :: AskableDecl -> Text -> Text -> Text
+formatAskableSidePrompt _decl question userResponse =
+  T.unlines
+    [ "Determine if the user confirmed or denied.",
+      "",
+      "Question asked: " <> question,
+      "User response: " <> userResponse,
+      "",
+      "Based on the user's response:",
+      "- If user CLEARLY agreed/confirmed (yes, correct, I confirm, etc), respond: CONFIRMED",
+      "- If user CLEARLY disagreed/denied (no, incorrect, I don't, etc), respond: DENIED",
+      "- If ambiguous or unclear, respond: AMBIGUOUS",
+      "",
+      "Respond with exactly one word: CONFIRMED, DENIED, or AMBIGUOUS"
+    ]
+
+-- | Process the result of a side session LLM call.
+processSideSessionResult ::
+  SideSessionSpec ->
+  Text -> -- question
+  Text -> -- userResponse
+  Either Text (Chat.Message Text) ->
+  AgentM db Text
+processSideSessionResult spec question userResponse result = do
+  env <- ask
+  case result of
+    Left err -> do
+      liftIO $ putDispLn (Output.SideSessionAmbiguous question userResponse)
+      pure $ formatAmbiguousSummary question userResponse ("LLM error: " <> err)
+    Right msg -> case msg of
+      Chat.Assistant {assistant_content = Just content} -> do
+        let normalized = T.strip (T.toUpper content)
+        case spec of
+          ContextSession name _decl ->
+            if "VALUE:" `T.isPrefixOf` normalized
+              then do
+                let extractedValue = T.strip $ T.drop 6 (T.strip content)
+                    scalar = ScStr extractedValue
+                -- Set the context value in Sentinel
+                liftIO $ Sentinel.runSentinelM env.sentinelEnv (Sentinel.setContextValue name scalar [])
+                let resultText = "Set " <> name <> " = " <> extractedValue
+                liftIO $ putDispLn (Output.SideSessionSuccess question userResponse resultText)
+                pure $ formatSuccessSummary question userResponse resultText
+              else do
+                liftIO $ putDispLn (Output.SideSessionAmbiguous question userResponse)
+                pure $ formatAmbiguousSummary question userResponse "Could not extract value"
+          AskableSession predName _decl args ->
+            if "CONFIRMED" `T.isInfixOf` normalized
+              then do
+                liftIO $ Sentinel.runSentinelM env.sentinelEnv (Sentinel.setAskableFact predName args True)
+                let resultText = "Confirmed: " <> predName
+                liftIO $ putDispLn (Output.SideSessionSuccess question userResponse resultText)
+                pure $ formatSuccessSummary question userResponse resultText
+              else
+                if "DENIED" `T.isInfixOf` normalized
+                  then do
+                    liftIO $ Sentinel.runSentinelM env.sentinelEnv (Sentinel.setAskableFact predName args False)
+                    let resultText = "Denied: " <> predName
+                    liftIO $ putDispLn (Output.SideSessionSuccess question userResponse resultText)
+                    pure $ formatSuccessSummary question userResponse resultText
+                  else do
+                    liftIO $ putDispLn (Output.SideSessionAmbiguous question userResponse)
+                    pure $ formatAmbiguousSummary question userResponse "Could not determine confirmation"
+      _ -> do
+        liftIO $ putDispLn (Output.SideSessionAmbiguous question userResponse)
+        pure $ formatAmbiguousSummary question userResponse "Unexpected LLM response format"
+
+-- | Format a successful side session summary for the LLM.
+formatSuccessSummary :: Text -> Text -> Text -> Text
+formatSuccessSummary question userResponse resultText =
+  T.unlines
+    [ "Side Session Complete:",
+      "  Question: " <> question,
+      "  User said: " <> userResponse,
+      "  Result: " <> resultText
+    ]
+
+-- | Format an ambiguous side session summary for the LLM.
+formatAmbiguousSummary :: Text -> Text -> Text -> Text
+formatAmbiguousSummary question userResponse reason =
+  T.unlines
+    [ "Side Session - Ambiguous:",
+      "  Question: " <> question,
+      "  User said: " <> userResponse,
+      "  Issue: " <> reason,
+      "  The fact/context was NOT established. Consider asking a follow-up question."
+    ]
 
 --------------------------------------------------------------------------------
 -- Main Agent Loop
@@ -159,7 +385,7 @@ processToolCall (ToolCall.ToolCall_Function {id = callId, function = fn}) = do
 --
 -- Takes:
 -- - Agent configuration
--- - Tool definitions for the LLM (LLMTool metadata)
+-- - Toolkit (for tool definitions and dynamic Ask tool generation)
 -- - System prompt
 -- - Sentinel and its environment (for guarded tool calls)
 -- - Message history
@@ -170,12 +396,9 @@ processToolCall (ToolCall.ToolCall_Function {id = callId, function = fn}) = do
 -- - Response text
 -- - Updated message history
 -- - Updated turn count
---
--- Note: Pending askables (questions awaiting user response) are managed in
--- SentinelEnv.pendingAskables, which persists across turns.
 runAgent ::
   AgentConfig ->
-  [Tool.LLMTool] ->
+  Toolkit db ->
   Text ->
   Sentinel db ->
   SentinelEnv db ->
@@ -183,150 +406,45 @@ runAgent ::
   Int ->
   Text ->
   IO (Text, [Message], Int)
-runAgent config tools systemPrompt sentinel sentinelEnv history turnCount userQuery = do
+runAgent config toolkit baseSystemPrompt sentinel sentinelEnv history turnCount userQuery = do
   putDispLn (Output.TurnStart turnCount userQuery)
   let newTurnCount = turnCount + 1
-      env =
+
+  -- Get current context and augment system prompt with it
+  ctxStore <- Sentinel.runSentinelM sentinelEnv Sentinel.getContextStore
+  let systemPrompt = augmentSystemPromptWithContext baseSystemPrompt ctxStore
+
+  let env =
         AgentEnv
           { config,
-            tools,
+            tools = Toolkit.toLLMTools toolkit,
             systemPrompt,
             sentinel,
-            sentinelEnv
+            sentinelEnv,
+            toolkit
           }
       initialState =
         AgentState
           { messages = UserMsg userQuery : history,
             turnCount = newTurnCount,
-            iterationCount = 0
+            iterationCount = 0,
+            blockedContextVars = [],
+            blockedAskables = []
           }
-  (response, finalState) <- runAgentM env initialState agentLoopWithAskableAssessment
+  (response, finalState) <- runAgentM env initialState agentLoop
   pure (response, finalState.messages, finalState.turnCount)
 
--- | Agent loop that first checks for pending askables and runs assessment.
-agentLoopWithAskableAssessment :: AgentM db Text
-agentLoopWithAskableAssessment = do
-  env <- ask
-  -- Read pending askables from SentinelEnv
-  pending <- liftIO $ Sentinel.runSentinelM env.sentinelEnv Sentinel.getPendingAskables
-  case pending of
-    [] -> agentLoop -- No pending askables, proceed normally
-    askables -> do
-      -- Get the user's response (it's the most recent message)
-      msgs <- use #messages
-      let userResponse = case msgs of
-            (UserMsg txt : _) -> txt
-            _ -> ""
+-- | Augment the system prompt with current context information.
+augmentSystemPromptWithContext :: Text -> ContextStore -> Text
+augmentSystemPromptWithContext basePrompt ctxStore =
+  let contextText = Sentinel.formatContextForLLM ctxStore
+   in if contextText == "No context established."
+        then basePrompt
+        else basePrompt <> "\n\n---\nSESSION CONTEXT:\n" <> contextText
 
-      -- Run the assessment side-session
-      assessmentResults <- liftIO $ runAskableAssessment env.config.llmConfig askables userResponse
-
-      -- Process assessment results
-      forM_ assessmentResults $ \(predName, args, mConfirmed) ->
-        case mConfirmed of
-          Just confirmed ->
-            -- Establish the fact in Sentinel
-            liftIO $ Sentinel.runSentinelM env.sentinelEnv (Sentinel.setAskableFact predName args confirmed)
-          Nothing ->
-            -- Ambiguous - fact remains unestablished
-            pure ()
-
-      -- Create summary message and inject into conversation
-      let summary = formatAskableSummary askables userResponse assessmentResults
-      liftIO $ putDispLn (Output.AskableAssessmentSummary askables userResponse assessmentResults)
-
-      -- Clear pending askables in SentinelEnv (assessment complete)
-      liftIO $ Sentinel.runSentinelM env.sentinelEnv Sentinel.clearPendingAskables
-
-      -- Inject summary as a system-style message that the LLM will see
-      -- We add it as a tool result with a synthetic call ID
-      let summaryMsg = AssistantMsg (Just summary) Nothing
-      #messages %= (summaryMsg :)
-
-      -- Continue with normal agent loop
-      agentLoop
-
--- | Format askable assessment summary for the conversation.
-formatAskableSummary ::
-  [PendingAskableInfo] ->
-  Text ->
-  [(Text, [Scalar], Maybe Bool)] ->
-  Text
-formatAskableSummary askables userResponse results =
-  T.unlines
-    [ "Askable Assessment Summary:",
-      "Questions asked: " <> T.intercalate ", " (fmap (.pendingQuestion) askables),
-      "User response: " <> userResponse,
-      "Results:",
-      T.unlines
-        [ "  - " <> predName <> ": " <> case mConfirmed of
-            Just True -> "confirmed"
-            Just False -> "denied"
-            Nothing -> "ambiguous (not established)"
-        | (predName, _args, mConfirmed) <- results
-        ]
-    ]
-
--- | Result of assessing a single askable.
-type AssessmentResult = (Text, [Scalar], Maybe Bool) -- (predicate, args, confirmed/denied/ambiguous)
-
--- | Run the askable assessment side-session.
---
--- This spawns a focused LLM session that assesses the user's response
--- and determines which askables were confirmed/denied.
-runAskableAssessment ::
-  LLM.LLMConfig ->
-  [PendingAskableInfo] ->
-  Text ->
-  IO [AssessmentResult]
-runAskableAssessment llmConfig askables userResponse = do
-  -- For each pending askable, run a focused assessment
-  forM askables $ \pending -> do
-    result <- assessSingleAskable llmConfig pending userResponse
-    pure (pending.pendingPredicate, pending.pendingArguments, result)
-
--- | Assess a single askable predicate against the user's response.
-assessSingleAskable ::
-  LLM.LLMConfig ->
-  PendingAskableInfo ->
-  Text ->
-  IO (Maybe Bool)
-assessSingleAskable llmConfig pending userResponse = do
-  let assessmentPrompt =
-        T.unlines
-          [ "You are assessing whether a user's response answers a yes/no question.",
-            "",
-            "The user was asked:",
-            "  Question: " <> pending.pendingQuestion,
-            "  Predicate: " <> pending.pendingPredicate,
-            "",
-            "The user's response was:",
-            "  \"" <> userResponse <> "\"",
-            "",
-            "Based on the user's response, determine:",
-            "- If the user CLEARLY said yes/agreed/confirmed, respond with: CONFIRMED",
-            "- If the user CLEARLY said no/disagreed/declined, respond with: DENIED",
-            "- If the response is ambiguous, unclear, or doesn't address the question, respond with: AMBIGUOUS",
-            "",
-            "Respond with exactly one word: CONFIRMED, DENIED, or AMBIGUOUS"
-          ]
-
-  -- Make a simple LLM call for assessment
-  result <- LLM.callChatCompletion llmConfig assessmentPrompt [] []
-
-  case result of
-    Left _err -> pure Nothing -- On error, treat as ambiguous
-    Right msg -> case msg of
-      Chat.Assistant {assistant_content = Just content} ->
-        let normalizedContent = T.strip (T.toUpper content)
-         in pure $
-              if "CONFIRMED" `T.isInfixOf` normalizedContent
-                then Just True
-                else
-                  if "DENIED" `T.isInfixOf` normalizedContent
-                    then Just False
-                    else Nothing -- Ambiguous
-      _ -> pure Nothing
+--------------------------------------------------------------------------------
+-- Main Agent Loop
+--------------------------------------------------------------------------------
 
 agentLoop :: AgentM db Text
 agentLoop = do
@@ -340,7 +458,33 @@ agentLoop = do
     else do
       liftIO $ putDispLn (Output.Iteration iteration)
       #iterationCount += 1
-      let openAITools = Tool.toOpenAITool <$> env.tools
+
+      -- Sync blocked items from Sentinel's pendingUserInputs
+      -- (These are populated by CheckGuard_* tools but not through AskUser path)
+      pending <- liftIO $ Sentinel.runSentinelM env.sentinelEnv Sentinel.getPendingUserInputs
+      forM_ pending $ \p -> case p.pendingType of
+        ContextInput -> do
+          current <- use #blockedContextVars
+          unless (p.pendingName `elem` current) $
+            #blockedContextVars %= (p.pendingName :)
+        AskableInput -> do
+          current <- use #blockedAskables
+          unless (any ((== p.pendingName) . fst) current) $
+            #blockedAskables %= ((p.pendingName, p.pendingArguments) :)
+
+      -- Get blocked items and generate dynamic Ask tools
+      blockedCtx <- use #blockedContextVars
+      blockedAsk <- use #blockedAskables
+      let dynamicTools = Toolkit.makeDynamicAskTools env.toolkit blockedCtx blockedAsk
+          allTools = env.tools ++ (Tool.toLLMTool <$> dynamicTools)
+          openAITools = Tool.toOpenAITool <$> allTools
+
+      -- Log available tools before LLM call
+      liftIO $ do
+        putStrLn $ "[DEBUG] blockedContextVars: " <> show blockedCtx
+        putStrLn $ "[DEBUG] blockedAskables: " <> show blockedAsk
+        putStrLn $ "[DEBUG] Tools available to LLM: " <> show ((.name) <$> allTools)
+
       result <- callLLM openAITools
       case result of
         Left err -> do
@@ -355,11 +499,13 @@ handleResponse :: Chat.Message Text -> AgentM db Text
 handleResponse msg = case msg of
   Chat.Assistant {assistant_content, tool_calls} ->
     case tool_calls of
-      Just calls | not (Vector.null calls) -> do
+      Just calls | not (V.null calls) -> do
         #messages %= (AssistantMsg assistant_content (Just calls) :)
-        toolResults <- traverse processToolCall (Vector.toList calls)
-        -- Prepend tool results in reverse order so they end up in correct order
-        #messages %= (reverse toolResults ++)
+        toolMsgs <- traverse processToolCall (V.toList calls)
+        -- Add all tool results to messages and continue the loop.
+        -- The LLM will see any BLOCKED messages and can call the appropriate
+        -- Ask tools to prompt the user.
+        #messages %= (reverse toolMsgs ++)
         agentLoop
       _ -> do
         let response = fromMaybe "" assistant_content

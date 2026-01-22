@@ -5,8 +5,7 @@
 --
 -- - __Query predicates__: Check fact store, invoke tools to establish facts
 -- - __Apply rules__: Combine predicates with logical operators (allOf, oneOf)
--- - __Block on context__: Report when a context variable needs to be established
--- - __Block on askables__: Report when user confirmation is needed
+-- - __Block on user input__: Report when context or user confirmation is needed
 -- - __Produce proofs__: Full audit trail of how conclusions were reached
 --
 -- == Architecture
@@ -54,8 +53,7 @@
 -- result <- runSolver env state eligibleForRefund
 -- case result of
 --   Success successes -> -- one or more proofs found
---   BlockedOnContext block -> -- need user to establish context
---   BlockedOnAskable block -> -- need user confirmation
+--   BlockedOnUserInput block -> -- need user input (context or confirmation)
 --   Failure failures -> -- all paths failed
 -- @
 module Sentinel.Solver
@@ -94,8 +92,8 @@ import Sentinel.Solver.Types
 --
 -- This is the main entry point for the solver. It:
 -- 1. Runs the solver monad collecting all successful proofs
--- 2. If no successes, checks for pending blocks (askables or context)
--- 3. Returns Success, BlockedOnContext, BlockedOnAskable, or Failure
+-- 2. If no successes, checks for pending blocks
+-- 3. Returns Success, BlockedOnUserInput, or Failure
 runSolver ::
   SolverEnv ->
   SolverState ->
@@ -108,26 +106,21 @@ runSolver env initState solver = do
       -- At least one proof succeeded
       pure (Success ne, finalState)
     Nothing ->
-      -- No successes - check for pending blocks
-      -- Priority: context blocks first (need context to make progress),
-      -- then askables (need user confirmation)
-      case finalState.pendingContextBlocks of
+      -- No successes - check for pending user input blocks
+      case finalState.pendingUserInputs of
         (block : _) ->
-          pure (BlockedOnContext block, finalState)
-        [] -> case finalState.pendingAskables of
-          (block : _) ->
-            pure (BlockedOnAskable block, finalState)
-          [] ->
-            -- No pending blocks - all paths truly failed
-            -- Use the recorded failure paths for detailed diagnostics
-            let failures = case getFailedPaths finalState of
-                  [] ->
-                    -- Shouldn't happen, but fallback to generic message
-                    [ FailurePath
-                        { ruleName = fromMaybe "unknown" finalState.currentRule,
-                          reason = "No proof path succeeded",
-                          partialProof = Nothing
-                        }
-                    ]
-                  fps -> fps
-             in pure (Failure failures, finalState)
+          pure (BlockedOnUserInput block, finalState)
+        [] ->
+          -- No pending blocks - all paths truly failed
+          -- Use the recorded failure paths for detailed diagnostics
+          let failures = case getFailedPaths finalState of
+                [] ->
+                  -- Shouldn't happen, but fallback to generic message
+                  [ FailurePath
+                      { ruleName = fromMaybe "unknown" finalState.currentRule,
+                        reason = "No proof path succeeded",
+                        partialProof = Nothing
+                      }
+                  ]
+                fps -> fps
+           in pure (Failure failures, finalState)

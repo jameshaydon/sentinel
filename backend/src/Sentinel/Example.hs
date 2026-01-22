@@ -8,13 +8,17 @@ module Sentinel.Example
   )
 where
 
+import Data.IORef (readIORef)
+import Data.Map.Strict qualified as M
 import Data.Text qualified as T
 import Pre
 import Sentinel.Agent (AgentConfig (..), Message, runAgent)
+import Sentinel.Context (ContextEstablishment (..), ContextStore (..), EstablishmentMethod (..))
 import Sentinel.Facts qualified as Facts
-import Sentinel.Sentinel (Sentinel, SentinelEnv, newSentinelEnv)
-import Sentinel.Tool (LLMTool)
-import Sentinel.Toolkit (Toolkit (..), toLLMTools, toolkitSentinel)
+import Sentinel.Output qualified as Output
+import Sentinel.Sentinel (Sentinel, SentinelEnv (..), SessionData, newSentinelEnv)
+import Sentinel.Solver.Types (scalarToText)
+import Sentinel.Toolkit (Toolkit (..), toolkitSentinel)
 import System.Console.Haskeline (InputT, defaultSettings, getInputLine, outputStrLn, runInputT)
 
 -- | An example packages everything needed to run a sentinel demo.
@@ -27,20 +31,37 @@ data Example db = Example
     initialDB :: db
   }
 
--- | Run an example with the given agent configuration.
-runExample :: AgentConfig -> Example db -> IO ()
-runExample config ex = do
-  let tools = toLLMTools ex.toolkit
-      sysPrompt = "Be terse and concise in your responses. This is a demo/prototype.\n\n" <> ex.toolkit.systemPrompt
+-- | Run an example with the given agent configuration and session data.
+runExample :: AgentConfig -> Example db -> SessionData -> IO ()
+runExample config ex sessionData = do
+  let sysPrompt = "Be terse and concise in your responses. This is a demo/prototype.\n\n" <> ex.toolkit.systemPrompt
       sentinel = toolkitSentinel ex.toolkit
       facts = Facts.emptyBaseFactStore
 
-  sentinelEnv <- newSentinelEnv ex.initialDB facts
-  repl config tools sysPrompt sentinel sentinelEnv ex.goodbyeMessage [] 0
+  sentinelEnv <- newSentinelEnv ex.initialDB facts sessionData ex.toolkit.contextDecls
+
+  -- Display seeded context
+  ctxStore <- readIORef sentinelEnv.contextStore
+  let seededCtx = getSeededContext ctxStore
+  putDispLn (Output.SessionInfo seededCtx)
+
+  repl config ex.toolkit sysPrompt sentinel sentinelEnv ex.goodbyeMessage [] 0
+
+-- | Extract seeded context variables from the context store.
+-- Returns only SystemSeeded values as (slot name, value text) pairs.
+getSeededContext :: ContextStore -> [(Text, Text)]
+getSeededContext (ContextStore established) =
+  [ (slot, scalarToText est.value)
+  | (slot, est) <- M.toList established,
+    isSystemSeeded est.establishedVia
+  ]
+  where
+    isSystemSeeded SystemSeeded = True
+    isSystemSeeded _ = False
 
 repl ::
   AgentConfig ->
-  [LLMTool] ->
+  Toolkit db ->
   T.Text ->
   Sentinel db ->
   SentinelEnv db ->
@@ -48,7 +69,7 @@ repl ::
   [Message] ->
   Int ->
   IO ()
-repl config tools systemPrompt sentinel sentinelEnv goodbye history turnCount =
+repl config toolkit systemPrompt sentinel sentinelEnv goodbye history turnCount =
   runInputT defaultSettings (loop history turnCount)
   where
     loop :: [Message] -> Int -> InputT IO ()
@@ -61,6 +82,6 @@ repl config tools systemPrompt sentinel sentinelEnv goodbye history turnCount =
               outputStrLn (T.unpack $ "\n" <> goodbye)
           | otherwise -> do
               (response, newHist, newTurnCount) <-
-                liftIO $ runAgent config tools systemPrompt sentinel sentinelEnv hist currentTurnCount (T.pack input)
+                liftIO $ runAgent config toolkit systemPrompt sentinel sentinelEnv hist currentTurnCount (T.pack input)
               outputStrLn (T.unpack $ "\n" <> response <> "\n")
               loop newHist newTurnCount

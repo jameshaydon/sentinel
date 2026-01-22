@@ -2,7 +2,6 @@
 module Sentinel.Schema
   ( objectSchema,
     stringProp,
-    arrayProp,
     enumProp,
   )
 where
@@ -34,15 +33,6 @@ stringProp :: Text -> Aeson.Value
 stringProp desc =
   Aeson.object
     [ "type" .= ("string" :: Text),
-      "description" .= desc
-    ]
-
--- | An array property (array of strings) with a description.
-arrayProp :: Text -> Aeson.Value
-arrayProp desc =
-  Aeson.object
-    [ "type" .= ("array" :: Text),
-      "items" .= Aeson.object ["type" .= ("string" :: Text)],
       "description" .= desc
     ]
 

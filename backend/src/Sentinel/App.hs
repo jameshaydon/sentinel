@@ -11,6 +11,7 @@ import Pre (Ann, Doc, indent, pretty, putDocLn, vsep, wrappedText, (<+>))
 import Sentinel.Agent (AgentConfig (..), defaultConfig)
 import Sentinel.Example (Example (..), runExample)
 import Sentinel.LLM qualified as LLM
+import Sentinel.Sentinel (SessionData (..))
 import System.Environment (getArgs, lookupEnv)
 import Prelude
 
@@ -56,7 +57,10 @@ missingKeyDoc =
 usageDoc :: [(String, String)] -> Doc Ann
 usageDoc examples =
   vsep
-    [ "Usage: sentinel <example>",
+    [ "Usage: sentinel <example> --user <user_id>",
+      "",
+      "Arguments:",
+      indent 2 $ vsep ["<example>     - The example to run", "--user <id>   - The user ID (required)"],
       "",
       "Available examples:",
       indent 2 $ vsep (fmap exampleLine examples),
@@ -67,12 +71,22 @@ usageDoc examples =
     exampleLine :: (String, String) -> Doc Ann
     exampleLine (cmd, desc) = pretty cmd <+> "-" <+> pretty desc
     exampleHint = case examples of
-      ((cmd, _) : _) -> "Example: sentinel " <> pretty cmd
+      ((cmd, _) : _) -> "Example: sentinel " <> pretty cmd <> " --user usr_sarah_chen"
       [] -> ""
 
--- | Run with a specific example.
-runWithExample :: Example db -> IO ()
-runWithExample ex = do
+-- | Error message for missing --user flag.
+missingUserDoc :: Doc Ann
+missingUserDoc =
+  vsep
+    [ "ERROR: --user <user_id> is required.",
+      "",
+      "Please specify a user ID to run the example:",
+      "  sentinel airlogic --user usr_sarah_chen"
+    ]
+
+-- | Run with a specific example and user ID.
+runWithExample :: Example db -> T.Text -> IO ()
+runWithExample ex userId = do
   putDocLn (bannerDoc ex)
   maybeKey <- lookupEnv "OPENAI_API_KEY"
   case maybeKey of
@@ -80,16 +94,19 @@ runWithExample ex = do
     Just apiKey -> do
       config <- defaultConfig (T.pack apiKey)
       let modelName = T.pack (show (config.llmConfig.model :: LLM.Model))
+          sessionData = SessionData {userId = Just userId}
       putDocLn (readyDoc modelName ex)
-      runExample config ex
+      runExample config ex sessionData
 
 -- | Main entry point.
 main :: IO ()
 main = do
   args <- getArgs
   case args of
-    ["airlogic"] -> runWithExample airLogicExample
-    ["aircanada"] -> runWithExample airCanadaExample
+    ["airlogic", "--user", userId] -> runWithExample airLogicExample (T.pack userId)
+    ["aircanada", "--user", userId] -> runWithExample airCanadaExample (T.pack userId)
+    ["airlogic"] -> putDocLn missingUserDoc
+    ["aircanada"] -> putDocLn missingUserDoc
     [other] -> do
       putDocLn $ "Unknown example: " <> pretty other
       putDocLn ""

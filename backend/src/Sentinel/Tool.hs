@@ -6,6 +6,7 @@
 -- - 'LLMTool': Tool metadata for the LLM (name, description, params)
 -- - 'ToolOutput': The result of tool execution (observation + produced facts)
 -- - 'ToolCategory': Whether a tool is a data tool (can be auto-invoked) or action tool
+-- - 'SideSessionSpec': Specification for triggering a side conversation session
 --
 -- All guards use the declarative 'SolverGuard' system, which provides full proof
 -- traces and supports blocking on context or askables.
@@ -15,6 +16,10 @@ module Sentinel.Tool
 
     -- * Tool Output
     ToolOutput (..),
+    BlockedItem (..),
+
+    -- * Side Session Specification
+    SideSessionSpec (..),
 
     -- * Tool Guards
     Guard,
@@ -33,9 +38,11 @@ where
 import Data.Aeson (Value)
 import OpenAI.V1.Tool qualified as OpenAI
 import Pre
+import Sentinel.Context (ContextDecl)
 import Sentinel.Sentinel (SentinelM)
+import Sentinel.Solver.Askable (AskableDecl)
 import Sentinel.Solver.Combinators (SolverM)
-import Sentinel.Solver.Types (BaseFact, Proof)
+import Sentinel.Solver.Types (BaseFact, Proof, Scalar)
 
 --------------------------------------------------------------------------------
 -- Tool Categories
@@ -50,16 +57,46 @@ data ToolCategory
   deriving stock (Eq, Show, Generic)
 
 --------------------------------------------------------------------------------
+-- Side Session Specification
+--------------------------------------------------------------------------------
+
+-- | Specification for triggering a side conversation session.
+--
+-- When an Ask tool is called, it returns a SideSessionSpec that triggers
+-- a synchronous side conversation with the user. The side conversation
+-- uses only the Set/Confirm/Deny tools appropriate to the type.
+data SideSessionSpec
+  = -- | Side session for establishing a context variable value
+    ContextSession Text ContextDecl -- (name, decl)
+  | -- | Side session for confirming/denying an askable fact
+    AskableSession Text AskableDecl [Scalar] -- (name, decl, args)
+  deriving stock (Show, Eq, Generic)
+
+--------------------------------------------------------------------------------
 -- Tool Output
 --------------------------------------------------------------------------------
+
+-- | Information about a blocked item (context variable or askable).
+-- Used to track what Ask tools should be made available.
+data BlockedItem
+  = -- | Blocked on a context variable
+    BlockedContext Text
+  | -- | Blocked on an askable predicate (name, arguments)
+    BlockedAskable Text [Scalar]
+  deriving stock (Show, Eq, Generic)
 
 -- | Output from tool execution.
 --
 -- Combines the observation text (returned to the LLM) with any facts
 -- produced by the tool execution (added to the fact store as BaseFacts).
+-- Optionally triggers a side session for user interaction.
 data ToolOutput = ToolOutput
   { observation :: Text,
-    producedFacts :: [BaseFact]
+    producedFacts :: [BaseFact],
+    -- | If set, triggers a synchronous side conversation session
+    triggerSideSession :: Maybe SideSessionSpec,
+    -- | Items that are blocked and need user input (makes Ask tools available)
+    blockedOn :: [BlockedItem]
   }
   deriving stock (Show, Generic)
 

@@ -19,8 +19,13 @@ module Sentinel.Toolkit
     withVerification,
     extractVerifiableClaims,
 
-    -- * Askable Protocol Tools
-    askUserAskableTool,
+    -- * Dynamic Ask Tools
+    makeDynamicAskTools,
+
+    -- * Re-exports for lookups
+    ContextDecl,
+    lookupContextDecl,
+    lookupAskable,
   )
 where
 
@@ -31,29 +36,37 @@ import Data.Map.Strict qualified as M
 import Data.Text qualified as T
 import Data.Text.Lazy qualified as T.Lazy
 import Pre
-import Sentinel.Context (ContextDecls)
+import Sentinel.Context (ContextDecl (..), ContextDecls (..), AskableSpec (..), lookupContextDecl)
 import Sentinel.Facts (HasFactStore (..))
 import Sentinel.Facts qualified as Facts
-import Sentinel.JSON (extractScalarArray, extractString)
 import Sentinel.Output qualified as Output
-import Sentinel.Schema qualified as Schema
-import Sentinel.Sentinel (Sentinel (..), SentinelEnv (..), SentinelM, SentinelResult (..), UserQuestion (..), addPendingAskable, getAskableStore, getContextStore)
+import Sentinel.Sentinel
+  ( Sentinel (..),
+    SentinelEnv (..),
+    SentinelM,
+    SentinelResult (..),
+    UserQuestion (..),
+    addPendingUserInput,
+    getAskableStore,
+    getContextStore,
+  )
 import Sentinel.Solver (runSolver)
-import Sentinel.Solver.Askable (AskableRegistry)
+import Sentinel.Solver.Askable (AskableDecl (..), AskableRegistry (..), formatQuestion, lookupAskable)
 import Sentinel.Solver.Combinators (SolverEnv (..), SolverState (..), emptySolverState, withRule)
 import Sentinel.Solver.ToolBindings (ToolBindingRegistry)
 import Sentinel.Solver.Types
-  ( AskableBlock (..),
-    BaseFact,
-    ContextBlock (..),
+  ( BaseFact,
     FailurePath (..),
     Proof (..),
-    Scalar,
+    Scalar (..),
     SolverResult (..),
     SolverSuccess (..),
+    UserInputBlock (..),
+    UserInputType (..),
     scalarToText,
   )
-import Sentinel.Tool (LLMTool, Tool (..), ToolCategory (..), ToolGuard (..), ToolOutput (..), toLLMTool)
+import Sentinel.Schema qualified as Schema
+import Sentinel.Tool (BlockedItem (..), LLMTool, Tool (..), ToolCategory (..), ToolGuard (..), ToolOutput (..), toLLMTool)
 
 --------------------------------------------------------------------------------
 -- Toolkit Type
@@ -199,26 +212,30 @@ evaluateToolGuard toolkit tool args = do
       case result of
         Success successes ->
           pure $ ToolGuardPassed successes
-        BlockedOnContext block ->
-          -- Convert context block to user question
-          let s = block.slot
+        BlockedOnUserInput block -> do
+          -- Register the pending user input so assessment runs on next turn
+          addPendingUserInput
+            block.inputType
+            block.name
+            block.arguments
+            block.question
+            [] -- No candidates provided from solver
+          -- Convert block to user question
+          let desc = case block.inputType of
+                ContextInput -> "Context: " <> block.name
+                AskableInput -> "Askable: " <> block.name
            in pure
                 $ ToolGuardNeedsInput
                   UserQuestion
-                    { questionText = "Please specify: " <> s,
-                      factDescription = "Context: " <> s,
-                      askablePredicate = Nothing,
-                      askableArguments = Nothing
+                    { questionText = block.question,
+                      factDescription = desc,
+                      askablePredicate = case block.inputType of
+                        ContextInput -> Nothing
+                        AskableInput -> Just block.name,
+                      askableArguments = case block.inputType of
+                        ContextInput -> Nothing
+                        AskableInput -> Just block.arguments
                     }
-        BlockedOnAskable block ->
-          pure
-            $ ToolGuardNeedsInput
-              UserQuestion
-                { questionText = block.question,
-                  factDescription = "Askable: " <> block.predicate,
-                  askablePredicate = Just block.predicate,
-                  askableArguments = Just block.arguments
-                }
         Failure failures ->
           pure $ ToolGuardDenied (formatSolverFailures failures)
 
@@ -288,20 +305,6 @@ verificationInstructions tk =
       | (guardName, tool) <- extractVerifiableClaims tk
       ]
 
--- | Instructions for handling askable predicates (NEEDS INFO responses).
-askableProtocolInstructions :: Text
-askableProtocolInstructions =
-  T.unlines
-    [ "",
-      "HANDLING 'NEEDS INFO' RESPONSES:",
-      "When a CheckGuard tool returns 'NEEDS INFO' with an askable predicate, you MUST:",
-      "1. Call the AskUserAskable tool with the predicate, arguments, and question",
-      "2. The question will be presented to the user for confirmation",
-      "3. Wait for the user's response - do NOT proceed until they answer",
-      "4. The user's response will be automatically assessed and the fact established",
-      "5. NEVER call EstablishAskable directly - always use AskUserAskable"
-    ]
-
 -- | Extract verifiable claims from action tools with SolverGuardT guards.
 --
 -- Returns a list of (guardName, tool) pairs for tools that have solver guards.
@@ -354,10 +357,23 @@ checkGuardExecute tk guardName args = do
     ToolGuardDenied reason -> Output.EligibilityDenied guardName reason
     ToolGuardNeedsInput question -> Output.EligibilityNeedsInfo guardName question.questionText
 
+  -- Extract blocked items from NeedsInput result
+  let blocked = case result of
+        ToolGuardNeedsInput question ->
+          case (question.askablePredicate, question.askableArguments) of
+            (Just predName, Just predArgs) -> [BlockedAskable predName predArgs]
+            _ ->
+              -- Context variable - extract name from factDescription (remove "Context: " prefix)
+              let ctxName = T.drop 9 question.factDescription
+               in [BlockedContext ctxName]
+        _ -> []
+
   pure
     ToolOutput
       { observation = formatGuardResult guardName result,
-        producedFacts = [] -- CheckGuard is informational only
+        producedFacts = [], -- CheckGuard is informational only
+        triggerSideSession = Nothing,
+        blockedOn = blocked
       }
 
 -- | Run a tool's guard without executing the tool.
@@ -379,10 +395,17 @@ formatGuardResult claimName = \case
         T.unlines
           [ "NEEDS INFO: " <> question.questionText,
             "Predicate: " <> predName,
-            "Arguments: " <> formatScalarList args
+            "Arguments: " <> formatScalarList args,
+            "",
+            "To resolve: Call Ask_" <> predName <> " to prompt the user."
           ]
       _ ->
-        "NEEDS INFO: " <> question.questionText
+        let ctxName = T.drop 9 question.factDescription -- Remove "Context: " prefix
+         in T.unlines
+              [ "NEEDS INFO: " <> question.questionText,
+                "",
+                "To resolve: Call Ask_" <> ctxName <> " to prompt the user."
+              ]
 
 -- | Format a list of scalars for display.
 formatScalarList :: [Scalar] -> Text
@@ -391,67 +414,96 @@ formatScalarList args = "[" <> T.intercalate ", " (scalarToText <$> args) <> "]"
 -- | Add verification support to a toolkit.
 --
 -- This adds CheckGuard tools (one per guarded action) and verification
--- instructions to the system prompt, including askable protocol instructions.
+-- instructions to the system prompt.
+--
+-- Note: Ask tools for context variables and askables are now generated
+-- dynamically by the agent when blocked, not added upfront.
 withVerification :: Toolkit db -> Toolkit db
 withVerification tk =
   tk
-    { tools = makeCheckGuardTools tk <> tk.tools,
-      systemPrompt = tk.systemPrompt <> verificationInstructions tk <> askableProtocolInstructions
+    { tools =
+        makeCheckGuardTools tk
+          <> tk.tools,
+      systemPrompt = tk.systemPrompt <> verificationInstructions tk
     }
 
 --------------------------------------------------------------------------------
--- Askable Protocol Tools
+-- Dynamic Ask Tools
 --------------------------------------------------------------------------------
 
--- | Tool to ask the user an askable question.
+-- | Generate dynamic Ask tools based on currently blocked items.
 --
--- This tool is used when a guard is blocked on an askable predicate.
--- Instead of the main LLM directly calling EstablishAskable, it calls this
--- tool to present the question to the user. The user's response is then
--- assessed by a separate LLM session.
+-- This creates Ask_<name> tools for each blocked context variable and
+-- askable predicate. These tools are only available when the corresponding
+-- item is blocked, and calling them triggers a side conversation session.
+makeDynamicAskTools ::
+  Toolkit db ->
+  [Text] -> -- Blocked context variable names
+  [(Text, [Scalar])] -> -- Blocked askables (predicate name, arguments)
+  [Tool db]
+makeDynamicAskTools tk blockedCtx blockedAskables =
+  -- Context variable Ask tools
+  [ makeDynamicAskContextTool decl
+  | ctxName <- blockedCtx,
+    Just decl <- [lookupContextDecl ctxName tk.contextDecls]
+  ]
+    ++
+    -- Askable Ask tools (one per blocked askable with its args)
+    [ makeDynamicAskAskableTool decl args
+    | (predName, args) <- blockedAskables,
+      Just decl <- [lookupAskable predName tk.askables]
+    ]
+
+-- | Create a dynamic Ask tool for a blocked context variable.
 --
--- The tool:
--- 1. Displays the question with special UX
--- 2. Records the pending askable in SentinelEnv
--- 3. Returns a marker indicating the agent should pause for user response
-askUserAskableTool :: Tool db
-askUserAskableTool =
-  Tool
-    { name = "AskUserAskable",
-      description =
-        "Ask the user an askable question when a guard is blocked on an askable predicate. "
-          <> "Use this when a CheckGuard tool returns 'NEEDS INFO' with an askable predicate. "
-          <> "The question will be presented to the user for confirmation. "
-          <> "IMPORTANT: Only use this tool to ask the question - do NOT call EstablishAskable directly. "
-          <> "The user's response will be automatically assessed.",
-      params =
-        Schema.objectSchema
-          [ ("predicate", Schema.stringProp "The askable predicate name (e.g., 'user_confirms_cancellation_understanding')"),
-            ("arguments", Schema.arrayProp "Array of arguments for the predicate (e.g., [\"BK-2847\"])"),
-            ("question", Schema.stringProp "The question to ask the user")
-          ]
-          ["predicate", "question"],
-      category = ActionTool,
-      guard = NoGuard,
-      execute = \args -> do
-        predicate <- extractString "predicate" args ??: "Missing 'predicate' parameter"
-        question <- extractString "question" args ??: "Missing 'question' parameter"
+-- Unlike the upfront Ask tools, this is only created when the context
+-- variable is actually blocked. The tool triggers a side session when called.
+makeDynamicAskContextTool :: ContextDecl -> Tool db
+makeDynamicAskContextTool decl =
+  let questionText = maybe ("Please specify " <> decl.name) (.questionTemplate) decl.askable
+   in Tool
+        { name = "Ask_" <> decl.name,
+          description =
+            "Ask the user: " <> questionText
+              <> " (This context variable is currently blocking the guard. "
+              <> "Calling this will prompt the user immediately.)",
+          params = Schema.objectSchema [] [],
+          category = DataTool,
+          guard = NoGuard,
+          -- The actual execution is handled by the agent, not here
+          execute = \_ ->
+            pure
+              ToolOutput
+                { observation = "Side session triggered for " <> decl.name,
+                  producedFacts = [],
+                  triggerSideSession = Nothing, -- Handled by agent
+                  blockedOn = []
+                }
+        }
 
-        let arguments = extractScalarArray "arguments" args
-
-        -- Display the askable question UX
-        liftIO $ putDispLn (Output.AskableQuestion predicate question)
-
-        -- Record the pending askable in SentinelEnv
-        lift $ addPendingAskable predicate arguments question
-
-        -- Return observation that signals to pause for user response
-        pure
-          ToolOutput
-            { observation =
-                "Question asked: " <> question <> "\n"
-                  <> "Awaiting user response. Do not proceed with this action until the user responds.",
-              producedFacts = []
-            }
-    }
-
+-- | Create a dynamic Ask tool for a blocked askable predicate.
+--
+-- The arguments are baked into the tool since they were determined when
+-- the guard blocked. The tool triggers a side session when called.
+makeDynamicAskAskableTool :: AskableDecl -> [Scalar] -> Tool db
+makeDynamicAskAskableTool decl args =
+  let formattedQuestion = formatQuestion decl.questionTemplate args
+   in Tool
+        { name = "Ask_" <> decl.predicate,
+          description =
+            "Ask the user: " <> formattedQuestion
+              <> " (This askable is currently blocking the guard. "
+              <> "Calling this will prompt the user immediately.)",
+          params = Schema.objectSchema [] [],
+          category = DataTool,
+          guard = NoGuard,
+          -- The actual execution is handled by the agent, not here
+          execute = \_ ->
+            pure
+              ToolOutput
+                { observation = "Side session triggered for " <> decl.predicate,
+                  producedFacts = [],
+                  triggerSideSession = Nothing, -- Handled by agent
+                  blockedOn = []
+                }
+        }

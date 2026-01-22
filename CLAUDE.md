@@ -13,8 +13,6 @@ nix build   # build the nix package
 nix flake check # run all nix flake checks
 ```
 
-If you change anything build related, make sure to test `nix build` (e.g. adding haskell packages as deps).
-
 ## Running
 ```bash
 cd backend && cabal run repl -- <example>

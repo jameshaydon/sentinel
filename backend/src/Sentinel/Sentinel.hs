@@ -7,7 +7,10 @@
 -- The agent calls 'guardedCall' for every tool invocation, and Sentinel
 -- handles all the complexity of guard resolution internally.
 module Sentinel.Sentinel
-  ( -- * Sentinel Result
+  ( -- * Session Data
+    SessionData (..),
+
+    -- * Sentinel Result
     SentinelResult (..),
 
     -- * Sentinel Environment
@@ -24,16 +27,17 @@ module Sentinel.Sentinel
     -- * Context Operations
     setContextValue,
     getContextStore,
+    formatContextForLLM,
 
     -- * Askable Fact Operations
     setAskableFact,
     getAskableStore,
 
-    -- * Pending Askable Operations
-    PendingAskableInfo (..),
-    addPendingAskable,
-    getPendingAskables,
-    clearPendingAskables,
+    -- * Pending User Input Operations
+    PendingUserInput (..),
+    addPendingUserInput,
+    getPendingUserInputs,
+    clearPendingUserInput,
 
     -- * Database Access
     getDb,
@@ -46,13 +50,15 @@ where
 
 import Data.Aeson (Value)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
-import Data.Time (getCurrentTime)
+import Data.Map.Strict qualified as M
+import Data.Text qualified as T
+import Data.Time (UTCTime, getCurrentTime)
 import Pre
-import Sentinel.Context (ContextEstablishment (..), ContextStore, EstablishmentMethod (..), emptyContextStore)
+import Sentinel.Context (ContextDecl (..), ContextDecls (..), ContextEstablishment (..), ContextStore, EstablishmentMethod (..), SeedSpec (..), emptyContextStore)
 import Sentinel.Context qualified as Context
 import Sentinel.Facts (AskableFactStore, BaseFactStore, HasFactStore (..), emptyAskableFactStore)
 import Sentinel.Facts qualified as Facts
-import Sentinel.Solver.Types (Scalar)
+import Sentinel.Solver.Types (Scalar (..), UserInputType (..))
 
 --------------------------------------------------------------------------------
 -- User Questions
@@ -72,20 +78,39 @@ data UserQuestion = UserQuestion
   deriving stock (Show, Eq, Generic)
 
 --------------------------------------------------------------------------------
--- Pending Askable Information
+-- Pending User Input
 --------------------------------------------------------------------------------
 
--- | Information about an askable question that was asked and is awaiting response.
--- This is stored in SentinelEnv so tools can register pending askables.
-data PendingAskableInfo = PendingAskableInfo
-  { -- | The askable predicate name (e.g., "user_confirms_cancellation_understanding")
-    pendingPredicate :: Text,
-    -- | Arguments to the predicate (e.g., [ScStr "BK-2847"])
+-- | Unified information about a user input request that was asked and is awaiting response.
+-- This replaces PendingAskableInfo with a unified structure for both context and askables.
+data PendingUserInput = PendingUserInput
+  { -- | The type of input (context or askable)
+    pendingType :: UserInputType,
+    -- | The name of the context variable or askable predicate
+    pendingName :: Text,
+    -- | Arguments (empty for context, predicate args for askable)
     pendingArguments :: [Scalar],
     -- | The human-readable question that was asked
-    pendingQuestion :: Text
+    pendingQuestion :: Text,
+    -- | Candidate values (for context variables)
+    pendingCandidates :: [Scalar]
   }
   deriving stock (Show, Eq, Generic)
+
+--------------------------------------------------------------------------------
+-- Session Data
+--------------------------------------------------------------------------------
+
+-- | Session data provided at startup (e.g., from authentication).
+--
+-- This data is used to pre-seed context variables that have a 'FromSession'
+-- seed specification.
+data SessionData = SessionData
+  { -- | The authenticated user's ID (if available)
+    userId :: Maybe Text
+  }
+  deriving stock (Show, Eq, Generic)
+  deriving anyclass (ToJSON, FromJSON)
 
 --------------------------------------------------------------------------------
 -- Sentinel Result
@@ -120,27 +145,65 @@ data SentinelEnv db = SentinelEnv
     contextStore :: IORef ContextStore,
     -- | The askable fact store (user confirmations)
     askableStore :: IORef AskableFactStore,
-    -- | Pending askables awaiting user response (set by AskUserAskable tool)
-    pendingAskables :: IORef [PendingAskableInfo]
+    -- | Pending user inputs awaiting response
+    pendingUserInputs :: IORef [PendingUserInput]
   }
   deriving stock (Generic)
 
--- | Create a new Sentinel environment with initial database and facts.
-newSentinelEnv :: db -> BaseFactStore -> IO (SentinelEnv db)
-newSentinelEnv initialDb initialFacts = do
+-- | Create a new Sentinel environment with initial database, facts, and session data.
+--
+-- The 'SessionData' and 'ContextDecls' are used to pre-seed context variables.
+-- For each context declaration with a 'FromSession' seed spec, if the corresponding
+-- session field is present, the context variable is pre-populated.
+newSentinelEnv :: db -> BaseFactStore -> SessionData -> ContextDecls -> IO (SentinelEnv db)
+newSentinelEnv initialDb initialFacts sessionData contextDecls = do
   dbRef <- newIORef initialDb
   factsRef <- newIORef initialFacts
-  contextRef <- newIORef emptyContextStore
   askableRef <- newIORef emptyAskableFactStore
-  pendingRef <- newIORef []
+  pendingUserInputsRef <- newIORef []
+
+  -- Seed context from session data
+  now <- getCurrentTime
+  let seededContext = seedContextFromSession sessionData contextDecls now
+  contextRef <- newIORef seededContext
+
   pure
     SentinelEnv
       { db = dbRef,
         facts = factsRef,
         contextStore = contextRef,
         askableStore = askableRef,
-        pendingAskables = pendingRef
+        pendingUserInputs = pendingUserInputsRef
       }
+
+-- | Seed context variables from session data based on context declarations.
+seedContextFromSession :: SessionData -> ContextDecls -> UTCTime -> ContextStore
+seedContextFromSession sessionData (ContextDecls decls) timestamp =
+  foldl' seedOne emptyContextStore (M.elems decls)
+  where
+    seedOne :: ContextStore -> ContextDecl -> ContextStore
+    seedOne store decl = case decl.seedValue of
+      Nothing -> store
+      Just (Constant value) ->
+        Context.setContext decl.name (mkEstablishment value) store
+      Just (FromSession fieldName) ->
+        case getSessionField fieldName sessionData of
+          Nothing -> store
+          Just value ->
+            Context.setContext decl.name (mkEstablishment (ScStr value)) store
+
+    mkEstablishment :: Scalar -> ContextEstablishment
+    mkEstablishment value =
+      ContextEstablishment
+        { value = value,
+          establishedVia = SystemSeeded,
+          timestamp = timestamp
+        }
+
+    -- Get a field from session data by name
+    getSessionField :: Text -> SessionData -> Maybe Text
+    getSessionField "user_id" sess = sess.userId
+    getSessionField _ _ = Nothing
 
 --------------------------------------------------------------------------------
 -- Sentinel Monad
@@ -242,6 +305,32 @@ getContextStore = do
   ctxRef <- asks (.contextStore)
   liftIO $ readIORef ctxRef
 
+-- | Format context for inclusion in LLM messages.
+--
+-- Returns a text description of the current context that the LLM can use
+-- to understand the session state.
+formatContextForLLM :: ContextStore -> Text
+formatContextForLLM store =
+  let entries = M.toList store.established
+   in if null entries
+        then "No context established."
+        else
+          T.unlines
+            [ "Current context:",
+              T.unlines
+                [ "  • " <> name <> " = " <> formatScalar est.value <> formatMethod est.establishedVia
+                | (name, est) <- entries
+                ]
+            ]
+  where
+    formatScalar (ScStr t) = t
+    formatScalar (ScNum n) = T.pack (show n)
+    formatScalar (ScBool b) = if b then "true" else "false"
+
+    formatMethod SystemSeeded = " (authenticated)"
+    formatMethod (UserSelection _) = " (user selected)"
+    formatMethod (DerivedFrom src) = " (from " <> src <> ")"
+
 --------------------------------------------------------------------------------
 -- Askable Fact Operations
 --------------------------------------------------------------------------------
@@ -259,28 +348,32 @@ getAskableStore = do
   liftIO $ readIORef askRef
 
 --------------------------------------------------------------------------------
--- Pending Askable Operations
+-- Pending User Input Operations (unified)
 --------------------------------------------------------------------------------
 
--- | Add a pending askable question awaiting user response.
-addPendingAskable :: Text -> [Scalar] -> Text -> SentinelM db ()
-addPendingAskable predName args questionText = do
-  pendingRef <- asks (.pendingAskables)
-  let info = PendingAskableInfo
-        { pendingPredicate = predName,
-          pendingArguments = args,
-          pendingQuestion = questionText
-        }
+-- | Add a pending user input awaiting response.
+addPendingUserInput :: UserInputType -> Text -> [Scalar] -> Text -> [Scalar] -> SentinelM db ()
+addPendingUserInput inputType inputName args questionText inputCandidates = do
+  pendingRef <- asks (.pendingUserInputs)
+  let info =
+        PendingUserInput
+          { pendingType = inputType,
+            pendingName = inputName,
+            pendingArguments = args,
+            pendingQuestion = questionText,
+            pendingCandidates = inputCandidates
+          }
   liftIO $ modifyIORef' pendingRef (info :)
 
--- | Get all pending askables.
-getPendingAskables :: SentinelM db [PendingAskableInfo]
-getPendingAskables = do
-  pendingRef <- asks (.pendingAskables)
+-- | Get all pending user inputs.
+getPendingUserInputs :: SentinelM db [PendingUserInput]
+getPendingUserInputs = do
+  pendingRef <- asks (.pendingUserInputs)
   liftIO $ readIORef pendingRef
 
--- | Clear all pending askables.
-clearPendingAskables :: SentinelM db ()
-clearPendingAskables = do
-  pendingRef <- asks (.pendingAskables)
-  liftIO $ modifyIORef' pendingRef (const [])
+-- | Clear a pending user input by name (after it's been resolved).
+clearPendingUserInput :: Text -> SentinelM db ()
+clearPendingUserInput name = do
+  pendingRef <- asks (.pendingUserInputs)
+  liftIO $ modifyIORef' pendingRef (filter (\p -> p.pendingName /= name))
+

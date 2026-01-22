@@ -5,6 +5,7 @@
 module Sentinel.Solver.Types
   ( -- * Scalar Values
     Scalar (..),
+    ScalarType (..),
     scalarToJSON,
     scalarFromJSON,
     dispScalar,
@@ -21,9 +22,8 @@ module Sentinel.Solver.Types
     -- * Solver Results
     SolverResult (..),
     SolverSuccess (..),
-    ContextBlock (..),
-    ContextCandidate (..),
-    AskableBlock (..),
+    UserInputBlock (..),
+    UserInputType (..),
     FailurePath (..),
   )
 where
@@ -48,6 +48,15 @@ data Scalar
   = ScBool Bool
   | ScNum Double
   | ScStr Text
+  deriving stock (Show, Eq, Ord, Generic)
+  deriving anyclass (ToJSON, FromJSON)
+
+-- | Type of a scalar value (for schema validation).
+data ScalarType
+  = TextType
+  | IntType
+  | BoolType
+  | FloatType
   deriving stock (Show, Eq, Ord, Generic)
   deriving anyclass (ToJSON, FromJSON)
 
@@ -159,10 +168,8 @@ data ProofResult
 data SolverResult
   = -- | One or more successful proof paths
     Success (NonEmpty SolverSuccess)
-  | -- | Blocked waiting for context to be established
-    BlockedOnContext ContextBlock
-  | -- | Blocked waiting for user confirmation of an askable
-    BlockedOnAskable AskableBlock
+  | -- | Blocked waiting for user input (context or askable)
+    BlockedOnUserInput UserInputBlock
   | -- | All paths failed
     Failure [FailurePath]
   deriving stock (Show, Eq, Generic)
@@ -195,41 +202,60 @@ instance Disp SolverSuccess where
             | (k, v) <- M.toList m
             ]
 
--- | Information about a blocked context variable.
-data ContextBlock = ContextBlock
-  { -- | The context slot that needs to be established (e.g., "booking_of_interest")
-    slot :: Text,
-    -- | Candidate values the user can choose from
-    candidates :: [ContextCandidate],
-    -- | Partial proof progress so far
-    partialProof :: Maybe Proof
-  }
-  deriving stock (Show, Eq, Generic)
+-- | The type of user input being requested.
+data UserInputType
+  = -- | Context variable (e.g., "booking_of_interest")
+    ContextInput
+  | -- | Askable predicate (e.g., "user_claims_bereavement")
+    AskableInput
+  deriving stock (Show, Eq, Ord, Generic)
   deriving anyclass (ToJSON, FromJSON)
 
--- | A candidate value for a context slot.
-data ContextCandidate = ContextCandidate
-  { -- | The actual value
-    value :: Scalar,
-    -- | Human-readable description
-    description :: Text
-  }
-  deriving stock (Show, Eq, Generic)
-  deriving anyclass (ToJSON, FromJSON)
-
--- | Information about a blocked askable predicate.
-data AskableBlock = AskableBlock
-  { -- | The predicate that needs user confirmation
-    predicate :: Text,
+-- | Unified information about a blocked user input request.
+--
+-- This replaces the separate ContextBlock and AskableBlock types
+-- with a unified structure that captures both cases.
+data UserInputBlock = UserInputBlock
+  { -- | The type of input being requested
+    inputType :: UserInputType,
+    -- | The name of the context variable or askable predicate
+    name :: Text,
     -- | Human-readable question to ask the user
     question :: Text,
-    -- | Arguments to the askable predicate
+    -- | Arguments (empty for context, predicate args for askable)
     arguments :: [Scalar],
+    -- | Candidate values (for context with known candidates)
+    candidates :: [Scalar],
     -- | Partial proof progress so far
     partialProof :: Maybe Proof
   }
   deriving stock (Show, Eq, Generic)
   deriving anyclass (ToJSON, FromJSON)
+
+instance Disp UserInputBlock where
+  disp block =
+    vsep
+      [ label "Blocked on:" <+> dispInputType block.inputType <+> pretty block.name,
+        indent 2 (label "Question:" <+> pretty block.question),
+        case block.arguments of
+          [] -> mempty
+          args ->
+            indent 2
+              $ label "Arguments:"
+              <+> hsep (punctuate comma (dispScalar <$> args)),
+        case block.candidates of
+          [] -> mempty
+          cs ->
+            indent 2
+              $ label "Candidates:"
+              <+> hsep (punctuate comma (dispScalar <$> cs)),
+        case block.partialProof of
+          Nothing -> mempty
+          Just p -> vsep [indent 2 (label "Progress so far:"), indent 4 (disp p)]
+      ]
+    where
+      dispInputType ContextInput = "context"
+      dispInputType AskableInput = "askable"
 
 -- | A failed proof path with explanation.
 data FailurePath = FailurePath
@@ -271,42 +297,6 @@ instance Disp ProofResult where
             Just p -> indent 2 ("Progress:" <+> disp p)
         ]
 
-instance Disp ContextCandidate where
-  disp cc =
-    dispScalar cc.value <+> "-" <+> pretty cc.description
-
-instance Disp ContextBlock where
-  disp cb =
-    vsep
-      [ label "Blocked on context:" <+> pretty cb.slot,
-        case cb.candidates of
-          [] -> indent 2 "(no candidates available)"
-          cs ->
-            vsep
-              [ indent 2 (label "Candidates:"),
-                indent 4 (vsep (disp <$> cs))
-              ],
-        case cb.partialProof of
-          Nothing -> mempty
-          Just p -> vsep [indent 2 (label "Progress so far:"), indent 4 (disp p)]
-      ]
-
-instance Disp AskableBlock where
-  disp ab =
-    vsep
-      [ label "Blocked on askable:" <+> pretty ab.predicate,
-        indent 2 (label "Question:" <+> pretty ab.question),
-        case ab.arguments of
-          [] -> mempty
-          args ->
-            indent 2
-              $ label "Arguments:"
-              <+> hsep (punctuate comma (dispScalar <$> args)),
-        case ab.partialProof of
-          Nothing -> mempty
-          Just p -> vsep [indent 2 (label "Progress so far:"), indent 4 (disp p)]
-      ]
-
 instance Disp SolverResult where
   disp = \case
     Success successes ->
@@ -322,8 +312,7 @@ instance Disp SolverResult where
             ([1 ..] :: [Int])
             (toList ss)
             & NE.fromList
-    BlockedOnContext cb -> disp cb
-    BlockedOnAskable ab -> disp ab
+    BlockedOnUserInput block -> disp block
     Failure failures ->
       vsep
         [ errorText "All paths failed:" <+> pretty (length failures) <+> "path(s) tried",

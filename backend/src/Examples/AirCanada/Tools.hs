@@ -19,7 +19,6 @@ module Examples.AirCanada.Tools
     airCanadaSystemPrompt,
 
     -- * Data Tools
-    loginTool,
     retrieveBookingTool,
     checkFlightTool,
     searchBookingsTool,
@@ -52,15 +51,15 @@ import Examples.AirCanada.Refund (DeathCircumstance (..), SpecialException (..))
 import Examples.AirCanada.ToolBindings (airCanadaToolBindings)
 import Examples.AirCanada.Types
 import Pre
-import Sentinel.Context (ContextDecl (..), ContextDecls, SeedSpec (..), declareContext, emptyContextDecls)
+import Sentinel.Context (AskableSpec (..), ContextDecl (..), ContextDecls, SeedSpec (..), declareContext, emptyContextDecls)
 import Sentinel.JSON (extractString)
 import Sentinel.Schema qualified as Schema
 import Sentinel.Sentinel (getDb, modifyDb, setContextValue)
 import Sentinel.Solver.Askable (AskableDecl (..), AskableRegistry, EvidenceType (..), declareAskable, emptyAskableRegistry)
 import Sentinel.Solver.Combinators (SolverM, andAll, askable, contextVar, extractArg, oneOf, queryPredicate, require)
-import Sentinel.Solver.Types (BaseFact (..), Proof (..), Scalar (..))
+import Sentinel.Solver.Types (BaseFact (..), Proof (..), Scalar (..), ScalarType (..))
 import Sentinel.Tool (Guard, Tool (..), ToolCategory (..), ToolGuard (..), ToolOutput (..))
-import Sentinel.Toolkit (Toolkit (..), askUserAskableTool)
+import Sentinel.Toolkit (Toolkit (..))
 
 --------------------------------------------------------------------------------
 -- Toolkit
@@ -71,14 +70,12 @@ airCanadaToolkit :: Toolkit AirlineDB
 airCanadaToolkit =
   Toolkit
     { tools =
-        [ loginTool,
-          retrieveBookingTool,
+        [ retrieveBookingTool,
           checkFlightTool,
           searchBookingsTool,
           processRefundTool,
           queryEligibilityTool,
-          establishContextTool,
-          askUserAskableTool
+          establishContextTool
         ],
       systemPrompt = airCanadaSystemPrompt,
       toolBindings = airCanadaToolBindings,
@@ -118,27 +115,6 @@ airCanadaSystemPrompt =
 -- Data Tools
 --------------------------------------------------------------------------------
 
--- | Login tool - establishes user identity.
-loginTool :: Tool AirlineDB
-loginTool =
-  Tool
-    { name = "Login",
-      description = "Log in a user by their name. This establishes the user's identity for the session, allowing them to access their bookings and perform actions.",
-      params =
-        Schema.objectSchema
-          [("userName", Schema.stringProp "The user's full name")]
-          ["userName"],
-      category = ActionTool, -- Login is an action, not auto-invoked
-      guard = NoGuard, -- No guard for login - always allowed
-      execute = \args -> do
-        userName <- extractString "userName" args ??: "Missing or invalid 'userName' parameter"
-        pure
-          ToolOutput
-            { observation = "Successfully logged in as: " <> userName,
-              producedFacts = [BaseFact "logged_in_user" [ScStr userName]]
-            }
-    }
-
 -- | Retrieve booking tool - looks up booking details.
 retrieveBookingTool :: Tool AirlineDB
 retrieveBookingTool =
@@ -159,7 +135,9 @@ retrieveBookingTool =
             pure
               ToolOutput
                 { observation = renderDocPlain (disp booking),
-                  producedFacts = bookingToFacts booking
+                  producedFacts = bookingToFacts booking,
+                  triggerSideSession = Nothing,
+                  blockedOn = []
                 }
           Nothing -> throwError $ "No booking found with reference: " <> ref
     }
@@ -184,7 +162,9 @@ checkFlightTool =
             pure
               ToolOutput
                 { observation = renderDocPlain (disp flight),
-                  producedFacts = flightToFacts flight
+                  producedFacts = flightToFacts flight,
+                  triggerSideSession = Nothing,
+                  blockedOn = []
                 }
           Nothing -> throwError $ "No flight found with number: " <> flightNum
     }
@@ -216,7 +196,9 @@ searchBookingsTool =
                           mempty,
                           vsep (punctuate (line <> "---" <> line) (fmap disp bookings))
                         ],
-                  producedFacts = concatMap bookingToFacts bookings
+                  producedFacts = concatMap bookingToFacts bookings,
+                  triggerSideSession = Nothing,
+                  blockedOn = []
                 }
     }
 
@@ -254,7 +236,9 @@ processRefundTool =
         pure
           ToolOutput
             { observation = result,
-              producedFacts = [] -- Action tools produce no facts
+              producedFacts = [], -- Action tools produce no facts
+              triggerSideSession = Nothing,
+              blockedOn = []
             }
     }
 
@@ -289,7 +273,9 @@ queryEligibilityTool =
             { observation =
                 "QueryRefundEligibility requires solver integration. "
                   <> "The Agent should run the eligibleForRefund rule via the solver.",
-              producedFacts = []
+              producedFacts = [],
+              triggerSideSession = Nothing,
+              blockedOn = []
             }
     }
 
@@ -325,7 +311,9 @@ establishContextTool =
         pure
           ToolOutput
             { observation = "Context established: " <> slot <> " = " <> value,
-              producedFacts = []
+              producedFacts = [],
+              triggerSideSession = Nothing,
+              blockedOn = []
             }
     }
 
@@ -335,38 +323,40 @@ establishContextTool =
 
 -- | Guard that requires user identity to be established.
 --
--- Queries the "logged_in_user" predicate to verify a user is logged in.
+-- Uses the "current_user" context variable to verify user is authenticated.
 userIdentityGuard :: Guard
 userIdentityGuard _args = do
-  fact <- queryPredicate "logged_in_user" []
-  pure $ FactUsed fact
+  user <- contextVar "current_user"
+  pure $ ContextBound "current_user" user
 
--- | Guard for SearchBookingsByName - requires identity AND name must match logged-in user.
+-- | Guard for SearchBookingsByName - requires identity AND name must match current user.
 --
 -- This guard:
--- 1. Requires a user to be logged in
--- 2. Verifies the passengerName argument matches the logged-in user
+-- 1. Requires the current_user context to be established
+-- 2. Verifies the passengerName argument matches the current user
 searchBookingsGuard :: Guard
 searchBookingsGuard args = do
   name <- extractArg "passengerName" args
-  fact <- queryPredicate "logged_in_user" [name]
-  pure $ FactUsed fact
+  user <- contextVar "current_user"
+  proof <- require (name == user) "passengerName matches current_user"
+  pure $ RuleApplied "search_bookings_authorized" [ContextBound "current_user" user, proof]
 
 -- | Guard for refund tool with sophisticated proof-building.
 --
 -- Requires:
--- - User identity established
+-- - User identity established (via current_user context)
 -- - Booking must exist (will be auto-fetched via tool binding)
 -- - Refund eligibility through one of multiple paths
 refundGuard :: Guard
 refundGuard args = do
   bookingRef <- extractArg "bookingRef" args
 
-  -- Require user identity
-  _ <- queryPredicate "logged_in_user" []
+  -- Require user identity via context
+  user <- contextVar "current_user"
 
   -- Booking must exist (auto-fetched via tool binding)
   _ <- queryPredicate "booking_passenger" [bookingRef]
+  let userProof = ContextBound "current_user" user
 
   -- Booking source must be acceptable (not from travel agency or other airline)
   sourceProof <-
@@ -402,7 +392,7 @@ refundGuard args = do
           pure $ RuleApplied "eligible_for_refund(voucher, medical_basic)" [proof]
       ]
 
-  pure $ RuleApplied "refund_eligibility" [sourceProof, eligibilityProof]
+  pure $ RuleApplied "refund_eligibility" [userProof, sourceProof, eligibilityProof]
 
 --------------------------------------------------------------------------------
 -- Proof Builders (from Rules.hs)
@@ -599,7 +589,7 @@ airCanadaAskables =
     [ -- User confirms they understand their booking will be cancelled
       AskableDecl
         { predicate = "user_confirms_cancellation",
-          arity = 1,
+          argumentTypes = [TextType], -- [user_id]
           questionTemplate =
             "Do you understand that processing this refund will cancel your booking "
               <> "and the ticket will no longer be valid for travel?",
@@ -609,7 +599,7 @@ airCanadaAskables =
       -- User claims a medical emergency prevents them from traveling
       AskableDecl
         { predicate = "user_claims_medical_emergency",
-          arity = 1,
+          argumentTypes = [TextType], -- [user_id]
           questionTemplate =
             "Are you requesting this refund due to a medical emergency "
               <> "that prevents you from traveling?",
@@ -619,7 +609,7 @@ airCanadaAskables =
       -- User claims a bereavement situation
       AskableDecl
         { predicate = "user_claims_bereavement",
-          arity = 1,
+          argumentTypes = [TextType], -- [user_id]
           questionTemplate =
             "Are you requesting this refund due to bereavement "
               <> "(death of passenger, immediate family member, or travel companion)?",
@@ -629,7 +619,7 @@ airCanadaAskables =
       -- User accepts voucher program terms and conditions
       AskableDecl
         { predicate = "user_accepts_voucher_terms",
-          arity = 1,
+          argumentTypes = [TextType], -- [user_id]
           questionTemplate =
             "Do you accept the travel voucher terms? The voucher will be valid "
               <> "for 1 year from date of issue and can be used for any Air Canada flight.",
@@ -639,7 +629,7 @@ airCanadaAskables =
       -- User confirms they will upload supporting documentation
       AskableDecl
         { predicate = "user_confirms_documentation",
-          arity = 2,
+          argumentTypes = [TextType, TextType], -- [user_id, document_type]
           questionTemplate =
             "Can you provide a {1} to support your request? "
               <> "This documentation is required to process your refund.",
@@ -658,25 +648,38 @@ airCanadaContextDecls =
   foldl'
     (flip declareContext)
     emptyContextDecls
-    [ -- The currently logged-in user
+    [ -- The currently logged-in user (pre-seeded, not askable)
       ContextDecl
         { name = "current_user",
-          candidateQuery = Nothing, -- No query - must be seeded from session
+          valueType = TextType,
           seedValue = Just (FromSession "user_id"),
+          askable = Nothing, -- Cannot be asked, only pre-seeded
           description = "The authenticated user making requests"
         },
       -- The booking the user is asking about
       ContextDecl
         { name = "booking_of_interest",
-          candidateQuery = Just "user_bookings", -- Query to find candidates
+          valueType = TextType,
           seedValue = Nothing, -- Not seeded - user must select
+          askable =
+            Just
+              AskableSpec
+                { questionTemplate = "Which booking are you asking about?",
+                  candidates = [] -- Candidates provided dynamically by LLM
+                },
           description = "The booking the customer is asking about"
         },
       -- The flight associated with the booking of interest
       ContextDecl
         { name = "flight_of_interest",
-          candidateQuery = Just "booking_flight", -- Derived from booking
-          seedValue = Nothing, -- Derived, not directly seeded
+          valueType = TextType,
+          seedValue = Nothing,
+          askable =
+            Just
+              AskableSpec
+                { questionTemplate = "Which flight are you asking about?",
+                  candidates = [] -- Derived from booking
+                },
           description = "The flight for the booking of interest"
         }
     ]

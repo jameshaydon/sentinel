@@ -43,15 +43,15 @@ import Examples.AirLogic.MockDB
 import Examples.AirLogic.ToolBindings (airLogicToolBindings)
 import Examples.AirLogic.Types
 import Pre
-import Sentinel.Context (ContextDecl (..), ContextDecls, SeedSpec (..), declareContext, emptyContextDecls)
+import Sentinel.Context (AskableSpec (..), ContextDecl (..), ContextDecls, SeedSpec (..), declareContext, emptyContextDecls, getContext)
 import Sentinel.JSON (extractString)
 import Sentinel.Schema qualified as Schema
-import Sentinel.Sentinel (getDb)
+import Sentinel.Sentinel (getContextStore, getDb)
 import Sentinel.Solver.Askable (AskableDecl (..), AskableRegistry, EvidenceType (..), declareAskable, emptyAskableRegistry)
-import Sentinel.Solver.Combinators (SolverM, askable, extractArg, oneOf, queryPredicate, require)
-import Sentinel.Solver.Types (BaseFact (..), Proof (..), Scalar (..))
+import Sentinel.Solver.Combinators (SolverM, askable, contextVar, oneOf, queryPredicate, require)
+import Sentinel.Solver.Types (BaseFact (..), Proof (..), Scalar (..), ScalarType (..), scalarToText)
 import Sentinel.Tool (Guard, Tool (..), ToolCategory (..), ToolGuard (..), ToolOutput (..))
-import Sentinel.Toolkit (Toolkit (..), askUserAskableTool)
+import Sentinel.Toolkit (Toolkit (..))
 
 --------------------------------------------------------------------------------
 -- Toolkit
@@ -70,8 +70,7 @@ airLogicToolkit =
           getRebookingPolicyTool,
           issueFullRefundTool,
           issuePartialRefundTool,
-          issueVoucherTool,
-          askUserAskableTool
+          issueVoucherTool
         ],
       systemPrompt = airLogicSystemPrompt,
       toolBindings = airLogicToolBindings,
@@ -139,7 +138,9 @@ getUserBookingsTool =
                           mempty,
                           vsep (punctuate (line <> "---" <> line) (fmap disp bookings))
                         ],
-                  producedFacts = concatMap bookingToFacts' bookings
+                  producedFacts = concatMap bookingToFacts' bookings,
+                  triggerSideSession = Nothing,
+                  blockedOn = []
                 }
     }
   where
@@ -166,7 +167,9 @@ getBookingTool =
             pure
               ToolOutput
                 { observation = renderDocPlain (disp booking),
-                  producedFacts = bookingToFacts booking
+                  producedFacts = bookingToFacts booking,
+                  triggerSideSession = Nothing,
+                  blockedOn = []
                 }
           Nothing -> throwError $ "No booking found with ID: " <> bookingId
     }
@@ -191,7 +194,9 @@ getFlightDetailsTool =
             pure
               ToolOutput
                 { observation = renderDocPlain (disp flight),
-                  producedFacts = flightToFacts flight
+                  producedFacts = flightToFacts flight,
+                  triggerSideSession = Nothing,
+                  blockedOn = []
                 }
           Nothing -> throwError $ "No flight found with ID: " <> flightId
     }
@@ -216,7 +221,9 @@ getAirportInfoTool =
             pure
               ToolOutput
                 { observation = renderDocPlain (disp airport),
-                  producedFacts = airportToFacts airport
+                  producedFacts = airportToFacts airport,
+                  triggerSideSession = Nothing,
+                  blockedOn = []
                 }
           Nothing -> throwError $ "No airport found with code: " <> code
     }
@@ -241,7 +248,9 @@ getUserProfileTool =
             pure
               ToolOutput
                 { observation = renderDocPlain (disp user),
-                  producedFacts = userToFacts user
+                  producedFacts = userToFacts user,
+                  triggerSideSession = Nothing,
+                  blockedOn = []
                 }
           Nothing -> throwError $ "No user found with ID: " <> userId
     }
@@ -267,7 +276,9 @@ getRebookingPolicyTool =
             pure
               ToolOutput
                 { observation = renderDocPlain (disp policy),
-                  producedFacts = rebookingPolicyToFacts policy
+                  producedFacts = rebookingPolicyToFacts policy,
+                  triggerSideSession = Nothing,
+                  blockedOn = []
                 }
           Nothing -> throwError $ "No rebooking policy found for fare class: " <> fareClassStr
     }
@@ -282,20 +293,20 @@ issueFullRefundTool =
   Tool
     { name = "IssueFullRefund",
       description =
-        "Process a FULL refund (no fees deducted) for an eligible booking. "
+        "Process a FULL refund (no fees deducted) for the booking of interest. "
           <> "CHECK THIS FIRST when a customer requests a refund, as it provides the best outcome. "
           <> "Eligibility: (1) Airline fault - flight cancelled or delayed >3 hours, "
           <> "(2) EU261 protection - EU departure and delay >5 hours, "
           <> "(3) Flexible fare class with >24 hours notice. "
           <> "Requires customer confirmation that they understand the booking will be cancelled.",
-      params =
-        Schema.objectSchema
-          [("bookingId", Schema.stringProp "The booking reference to refund")]
-          ["bookingId"],
+      params = Schema.objectSchema [] [],
       category = ActionTool,
       guard = SolverGuardT "full_refund_eligibility" fullRefundGuard,
-      execute = \args -> do
-        bookingId <- extractString "bookingId" args ??: "Missing or invalid 'bookingId' parameter"
+      execute = \_ -> do
+        ctxStore <- lift getContextStore
+        bookingId <- getContext "booking_of_interest" ctxStore
+          & fmap scalarToText
+          ??: "booking_of_interest context not set"
         db <- lift getDb
         case getBooking bookingId db of
           Nothing -> throwError $ "Booking not found: " <> bookingId
@@ -309,7 +320,9 @@ issueFullRefundTool =
                       <> " approved for booking "
                       <> bookingId
                       <> ". Amount will be credited to the original payment method within 3-5 business days.",
-                  producedFacts = [BaseFact "refund_issued" [ScStr bookingId, ScStr "full", ScNum (fromIntegral booking.totalAmountCents)]]
+                  producedFacts = [BaseFact "refund_issued" [ScStr bookingId, ScStr "full", ScNum (fromIntegral booking.totalAmountCents)]],
+                  triggerSideSession = Nothing,
+                  blockedOn = []
                 }
     }
 
@@ -319,19 +332,19 @@ issuePartialRefundTool =
   Tool
     { name = "IssuePartialRefund",
       description =
-        "Process a PARTIAL refund ($150 fee deducted) for an eligible booking. "
+        "Process a PARTIAL refund ($150 fee deducted) for the booking of interest. "
           <> "Only use this if full refund is not available - this is for voluntary cancellations. "
           <> "Eligibility: (1) Standard fare class with >72 hours until departure, "
           <> "(2) Bereavement with documentation. "
           <> "Requires customer confirmation that they understand the booking will be cancelled.",
-      params =
-        Schema.objectSchema
-          [("bookingId", Schema.stringProp "The booking reference to refund")]
-          ["bookingId"],
+      params = Schema.objectSchema [] [],
       category = ActionTool,
       guard = SolverGuardT "partial_refund_eligibility" partialRefundGuard,
-      execute = \args -> do
-        bookingId <- extractString "bookingId" args ??: "Missing or invalid 'bookingId' parameter"
+      execute = \_ -> do
+        ctxStore <- lift getContextStore
+        bookingId <- getContext "booking_of_interest" ctxStore
+          & fmap scalarToText
+          ??: "booking_of_interest context not set"
         db <- lift getDb
         case getBooking bookingId db of
           Nothing -> throwError $ "Booking not found: " <> bookingId
@@ -347,7 +360,9 @@ issuePartialRefundTool =
                       <> bookingId
                       <> " (after $150 cancellation fee). "
                       <> "Amount will be credited to the original payment method within 3-5 business days.",
-                  producedFacts = [BaseFact "refund_issued" [ScStr bookingId, ScStr "partial", ScNum (fromIntegral refundAmount)]]
+                  producedFacts = [BaseFact "refund_issued" [ScStr bookingId, ScStr "partial", ScNum (fromIntegral refundAmount)]],
+                  triggerSideSession = Nothing,
+                  blockedOn = []
                 }
     }
 
@@ -357,18 +372,18 @@ issueVoucherTool =
   Tool
     { name = "IssueVoucher",
       description =
-        "Issue a travel voucher for an eligible booking. "
+        "Issue a travel voucher for the booking of interest. "
           <> "Available for Basic Economy with medical emergency documentation. "
           <> "Voucher is valid for 1 year and non-transferable. "
           <> "Requires customer acceptance of voucher terms and conditions.",
-      params =
-        Schema.objectSchema
-          [("bookingId", Schema.stringProp "The booking reference for the voucher")]
-          ["bookingId"],
+      params = Schema.objectSchema [] [],
       category = ActionTool,
       guard = SolverGuardT "voucher_eligibility" voucherGuard,
-      execute = \args -> do
-        bookingId <- extractString "bookingId" args ??: "Missing or invalid 'bookingId' parameter"
+      execute = \_ -> do
+        ctxStore <- lift getContextStore
+        bookingId <- getContext "booking_of_interest" ctxStore
+          & fmap scalarToText
+          ??: "booking_of_interest context not set"
         db <- lift getDb
         case getBooking bookingId db of
           Nothing -> throwError $ "Booking not found: " <> bookingId
@@ -385,7 +400,9 @@ issueVoucherTool =
                       <> "Voucher code: VCH-"
                       <> bookingId
                       <> "-2025",
-                  producedFacts = [BaseFact "voucher_issued" [ScStr bookingId, ScNum (fromIntegral booking.totalAmountCents)]]
+                  producedFacts = [BaseFact "voucher_issued" [ScStr bookingId, ScNum (fromIntegral booking.totalAmountCents)]],
+                  triggerSideSession = Nothing,
+                  blockedOn = []
                 }
     }
 
@@ -402,8 +419,9 @@ getScalarNum = \case
 -- | Guard for full refund: eligible via airline_fault, eu261, or flexible_fare.
 -- Also requires user confirmation of cancellation understanding.
 fullRefundGuard :: Guard
-fullRefundGuard args = do
-  bookingId <- extractArg "bookingId" args
+fullRefundGuard _args = do
+  bookingId <- contextVar "booking_of_interest"
+  user <- contextVar "current_user"
 
   -- Check eligibility through one of the full refund paths
   eligibilityProof <-
@@ -420,7 +438,7 @@ fullRefundGuard args = do
       ]
 
   -- Require user confirmation before proceeding
-  confirmProof <- askable "user_confirms_cancellation_understanding" [bookingId]
+  confirmProof <- askable "user_confirms_cancellation_understanding" [user]
 
   pure $ RuleApplied "full_refund_eligibility" [eligibilityProof, confirmProof]
 
@@ -491,8 +509,9 @@ flexibleFareProof bookingId = do
 -- | Guard for partial refund: eligible via standard_fare or bereavement.
 -- Also requires user confirmation of cancellation understanding.
 partialRefundGuard :: Guard
-partialRefundGuard args = do
-  bookingId <- extractArg "bookingId" args
+partialRefundGuard _args = do
+  bookingId <- contextVar "booking_of_interest"
+  user <- contextVar "current_user"
 
   -- Check eligibility through one of the partial refund paths
   eligibilityProof <-
@@ -501,12 +520,12 @@ partialRefundGuard args = do
           proof <- standardFareProof bookingId
           pure $ RuleApplied "eligible_for_refund(partial, standard_fare)" [proof],
         do
-          proof <- bereavementProof bookingId
+          proof <- bereavementProof user
           pure $ RuleApplied "eligible_for_refund(partial, bereavement)" [proof]
       ]
 
   -- Require user confirmation before proceeding
-  confirmProof <- askable "user_confirms_cancellation_understanding" [bookingId]
+  confirmProof <- askable "user_confirms_cancellation_understanding" [user]
 
   pure $ RuleApplied "partial_refund_eligibility" [eligibilityProof, confirmProof]
 
@@ -527,17 +546,18 @@ standardFareProof bookingId = do
 
   pure $ RuleApplied "fare_allows_refund(partial)" [fareProof, hoursProof]
 
--- | Prove bereavement_eligible(B): user claims bereavement and confirms documentation.
+-- | Prove bereavement_eligible(U): user claims bereavement and confirms documentation.
 bereavementProof :: Scalar -> SolverM Proof
-bereavementProof bookingId = do
-  claimProof <- askable "user_claims_bereavement" [bookingId]
-  docProof <- askable "user_confirms_upload_documentation" [bookingId, ScStr "death_certificate"]
+bereavementProof user = do
+  claimProof <- askable "user_claims_bereavement" [user]
+  docProof <- askable "user_confirms_upload_documentation" [user, ScStr "death_certificate"]
   pure $ RuleApplied "bereavement_eligible" [claimProof, docProof]
 
 -- | Guard for voucher: eligible for Basic Economy with medical documentation.
 voucherGuard :: Guard
-voucherGuard args = do
-  bookingId <- extractArg "bookingId" args
+voucherGuard _args = do
+  bookingId <- contextVar "booking_of_interest"
+  user <- contextVar "current_user"
 
   -- Check fare class is Basic
   fareClassFact <- queryPredicate "booking_fare_class" [bookingId]
@@ -546,13 +566,13 @@ voucherGuard args = do
   let fareProof = RuleApplied "basic_fare_class" [FactUsed fareClassFact, fareCheck]
 
   -- User must claim medical emergency
-  medicalProof <- askable "user_claims_medical_emergency" [bookingId]
+  medicalProof <- askable "user_claims_medical_emergency" [user]
 
   -- User must confirm they will upload medical documentation
-  docProof <- askable "user_confirms_upload_documentation" [bookingId, ScStr "medical_certificate"]
+  docProof <- askable "user_confirms_upload_documentation" [user, ScStr "medical_certificate"]
 
   -- User must accept voucher terms and conditions
-  termsProof <- askable "user_accepts_voucher_terms" [bookingId]
+  termsProof <- askable "user_accepts_voucher_terms" [user]
 
   let eligibilityProof = RuleApplied "fare_allows_refund(voucher)" [fareProof, medicalProof, docProof, termsProof]
 
@@ -570,35 +590,35 @@ airLogicAskables =
     emptyAskableRegistry
     [ AskableDecl
         { predicate = "user_confirms_cancellation_understanding",
-          arity = 1,
+          argumentTypes = [TextType], -- [user_id]
           questionTemplate = "Do you understand that if we process this refund, your booking will be cancelled and your ticket will become invalid?",
           evidenceType = ExplicitConfirmation,
           description = "User confirms they understand the booking will be cancelled"
         },
       AskableDecl
         { predicate = "user_claims_medical_emergency",
-          arity = 1,
+          argumentTypes = [TextType], -- [user_id]
           questionTemplate = "Are you requesting this refund due to a medical emergency that prevents you from traveling?",
           evidenceType = UserStatement,
           description = "User claims medical emergency"
         },
       AskableDecl
         { predicate = "user_claims_bereavement",
-          arity = 1,
+          argumentTypes = [TextType], -- [user_id]
           questionTemplate = "Are you requesting this refund due to bereavement (death of an immediate family member)?",
           evidenceType = UserStatement,
           description = "User claims bereavement circumstances"
         },
       AskableDecl
         { predicate = "user_accepts_voucher_terms",
-          arity = 1,
+          argumentTypes = [TextType], -- [user_id]
           questionTemplate = "Do you accept the terms and conditions of the travel voucher program (voucher valid for 1 year, non-transferable)?",
           evidenceType = ExplicitConfirmation,
           description = "User accepts voucher T&C"
         },
       AskableDecl
         { predicate = "user_confirms_upload_documentation",
-          arity = 2,
+          argumentTypes = [TextType, TextType], -- [user_id, document_type]
           questionTemplate = "Can you provide a {1} to support your request?",
           evidenceType = DocumentUpload "documentation",
           description = "User confirms they will upload required documentation"
@@ -617,14 +637,21 @@ airLogicContextDecls =
     emptyContextDecls
     [ ContextDecl
         { name = "current_user",
-          candidateQuery = Nothing,
+          valueType = TextType,
           seedValue = Just (FromSession "user_id"),
+          askable = Nothing, -- Cannot be asked, only pre-seeded
           description = "The authenticated user's ID"
         },
       ContextDecl
         { name = "booking_of_interest",
-          candidateQuery = Just "user_bookings",
+          valueType = TextType,
           seedValue = Nothing,
+          askable =
+            Just
+              AskableSpec
+                { questionTemplate = "Which booking are you asking about?",
+                  candidates = [] -- Candidates provided dynamically by LLM
+                },
           description = "The booking the customer is asking about"
         }
     ]

@@ -50,7 +50,7 @@ import Control.Monad.Logic (LogicT, observeAllT)
 import Control.Monad.State.Strict (StateT, gets, modify', runStateT)
 import Data.Aeson (Value)
 import Pre
-import Sentinel.Context (ContextDecl (..), ContextDecls, ContextStore, getContext, lookupContextDecl)
+import Sentinel.Context (AskableSpec (..), ContextDecl (..), ContextDecls, ContextStore, getContext, lookupContextDecl)
 import Sentinel.Facts
   ( AskableFactStore,
     BaseFactStore,
@@ -100,10 +100,8 @@ data SolverState = SolverState
     currentRule :: Maybe Text,
     -- | Current reason (for success reporting)
     currentReason :: Maybe Text,
-    -- | Askable predicates that blocked proof paths (recorded for reporting)
-    pendingAskables :: [AskableBlock],
-    -- | Context variables that blocked proof paths (recorded for reporting)
-    pendingContextBlocks :: [ContextBlock],
+    -- | User input requests that blocked proof paths
+    pendingUserInputs :: [UserInputBlock],
     -- | Failed proof paths (recorded for diagnostic reporting)
     failedPaths :: [FailurePath]
   }
@@ -119,8 +117,7 @@ emptySolverState baseFacts askableFacts =
       proofStack = [],
       currentRule = Nothing,
       currentReason = Nothing,
-      pendingAskables = [],
-      pendingContextBlocks = [],
+      pendingUserInputs = [],
       failedPaths = []
     }
 
@@ -272,7 +269,7 @@ withRule ruleName action = do
 
 -- | Get a context variable value, or block if not established.
 --
--- If the context variable is not established, this records a ContextBlock
+-- If the context variable is not established, this records a UserInputBlock
 -- in state and fails the branch with 'mzero'. LogicT will backtrack to try
 -- other paths. The pending block can be checked after all paths are exhausted.
 contextVar :: Text -> SolverM Scalar
@@ -283,43 +280,33 @@ contextVar varName = do
       appendProof (ContextBound varName value)
       pure value
     Nothing -> do
-      -- Not established - look up declaration to find candidates
+      -- Not established - look up declaration
       ctxDecls <- asks (.contextDecls)
       case lookupContextDecl varName ctxDecls of
         Nothing ->
           -- Unknown context variable - this is an error, fail the branch
           failWith $ "Unknown context variable: " <> varName
         Just decl -> do
-          -- Try to find candidates via candidateQuery
-          candidates <- getCandidates decl
-          -- Record the block and fail this branch
-          partialProof <- getCurrentProof
-          let block =
-                ContextBlock
-                  { slot = varName,
-                    candidates = candidates,
-                    partialProof = partialProof
-                  }
-          modify' $ \s -> s {pendingContextBlocks = block : s.pendingContextBlocks}
-          mzero -- Fail this branch, allowing backtracking
-
--- | Get candidate values for a context variable.
-getCandidates :: ContextDecl -> SolverM [ContextCandidate]
-getCandidates decl = do
-  case decl.candidateQuery of
-    Nothing -> pure [] -- No query, no candidates
-    Just queryPred -> do
-      -- Query the predicate to find candidates
-      -- This is a "soft" query - we don't fail if no results
-      facts <- gets (lookupBaseFacts queryPred . (.baseFactStore))
-      pure
-        [ ContextCandidate
-            { value = arg,
-              description = scalarToText arg
-            }
-          | fact <- facts,
-            arg <- take 1 (drop 1 fact.arguments) -- Second argument is typically the value
-        ]
+          -- Check if this context is askable
+          case decl.askable of
+            Nothing ->
+              -- Not askable - can only be pre-seeded
+              failWith $ "Context variable '" <> varName <> "' is not askable and not seeded"
+            Just spec -> do
+              -- Record the block and fail this branch
+              partialProof <- getCurrentProof
+              let userInputBlock =
+                    UserInputBlock
+                      { inputType = ContextInput,
+                        name = varName,
+                        question = spec.questionTemplate,
+                        arguments = [],
+                        candidates = spec.candidates,
+                        partialProof = partialProof
+                      }
+              modify' $ \s ->
+                s {pendingUserInputs = userInputBlock : s.pendingUserInputs}
+              mzero -- Fail this branch, allowing backtracking
 
 --------------------------------------------------------------------------------
 -- Askable Predicates
@@ -329,7 +316,7 @@ getCandidates decl = do
 --
 -- If the predicate has been confirmed (True), this succeeds.
 -- If the predicate has been denied (False), this fails.
--- If the predicate hasn't been asked yet, this records an AskableBlock
+-- If the predicate hasn't been asked yet, this records a UserInputBlock
 -- in state and fails the branch with 'mzero'. LogicT will backtrack to try
 -- other paths. The pending block can be checked after all paths are exhausted.
 askable :: Text -> [Scalar] -> SolverM Proof
@@ -353,14 +340,17 @@ askable predName args = do
         Just decl -> do
           let question = formatQuestion decl.questionTemplate args
           partialProof <- getCurrentProof
-          let block =
-                AskableBlock
-                  { predicate = predName,
+          let userInputBlock =
+                UserInputBlock
+                  { inputType = AskableInput,
+                    name = predName,
                     question = question,
                     arguments = args,
+                    candidates = [],
                     partialProof = partialProof
                   }
-          modify' $ \s -> s {pendingAskables = block : s.pendingAskables}
+          modify' $ \s ->
+            s {pendingUserInputs = userInputBlock : s.pendingUserInputs}
           mzero -- Fail this branch, allowing backtracking
 
 --------------------------------------------------------------------------------

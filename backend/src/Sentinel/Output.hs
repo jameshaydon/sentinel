@@ -16,10 +16,19 @@ module Sentinel.Output
     QueryExecution (..),
     NeedsUserInput (..),
     EligibilityCheckResult (..),
+    DirectQuestion (..),
 
     -- * Askable UX Types
     AskableQuestion (..),
+    ContextQuestion (..),
     AskableAssessmentSummary (..),
+
+    -- * Side Session Types
+    AskingUser (..),
+    SideSessionResult (..),
+
+    -- * Session Info
+    SessionInfo (..),
   )
 where
 
@@ -170,7 +179,7 @@ instance Disp NeedsUserInput where
 data EligibilityCheckResult
   = EligibilityVerified Text (NonEmpty SolverSuccess)
   | EligibilityDenied Text Text
-  | EligibilityNeedsInfo Text Text
+  | EligibilityNeedsInfo Text Text -- ^ (guard name, question text)
   deriving stock (Show, Eq, Generic)
 
 instance Disp EligibilityCheckResult where
@@ -182,14 +191,22 @@ instance Disp EligibilityCheckResult where
     EligibilityDenied claim reason ->
       let hdr = errorText "✗" <+> label "Not verified:" <+> pretty claim
        in section 4 hdr (indent 2 (wrappedText reason))
-    EligibilityNeedsInfo claim question ->
-      let hdr = label "⏸" <+> label "Blocked on askable:" <+> pretty claim
+    EligibilityNeedsInfo guardName question ->
+      let hdr = label "⏸" <+> label "Blocked:" <+> pretty guardName <+> label "needs info"
        in section 4 hdr $
             vsep
-              [ dimText "(Solver needs user confirmation before this can be verified)",
+              [ dimText "(Call the appropriate Ask tool to prompt the user)",
                 "",
                 label "Question:" <+> wrappedText question
               ]
+
+-- | Direct question to user (bypasses LLM, displayed immediately)
+data DirectQuestion = DirectQuestion {directQuestionText :: Text}
+  deriving stock (Show, Eq, Generic)
+
+instance Disp DirectQuestion where
+  disp (DirectQuestion q) =
+    section 4 (label "❓ Question for you:") (wrappedText q)
 
 --------------------------------------------------------------------------------
 -- Askable UX Types
@@ -208,6 +225,22 @@ instance Disp AskableQuestion where
     section 4 (label "? Asking User" <+> dimText "(askable fact)") $
       vsep
         [ label "Predicate:" <+> pretty predName,
+          label "Question:" <+> wrappedText q
+        ]
+
+-- | A context variable question being presented to the user.
+-- Used when the Ask_<context> tool is called.
+data ContextQuestion = ContextQuestion
+  { contextSlotName :: Text,
+    contextQuestionText :: Text
+  }
+  deriving stock (Show, Eq, Generic)
+
+instance Disp ContextQuestion where
+  disp (ContextQuestion ctxName q) =
+    section 4 (label "? Asking User" <+> dimText "(context variable)") $
+      vsep
+        [ label "Context:" <+> pretty ctxName,
           label "Question:" <+> wrappedText q
         ]
 
@@ -243,3 +276,63 @@ instance Disp (AskableAssessmentSummary a b) where
               | (predName, _args, mConfirmed) <- summary.assessmentResults
               ]
         ]
+
+--------------------------------------------------------------------------------
+-- Side Session Types
+--------------------------------------------------------------------------------
+
+-- | Display exact question to user during side session.
+-- This is shown immediately when an Ask tool triggers a side conversation.
+data AskingUser = AskingUser {askingUserQuestion :: Text}
+  deriving stock (Show, Eq, Generic)
+
+instance Disp AskingUser where
+  disp (AskingUser q) =
+    section 4 (label "❓ Question for you:") (wrappedText q)
+
+-- | Result of a side session (displayed after user responds).
+data SideSessionResult
+  = -- | Success: question, user response, result
+    SideSessionSuccess Text Text Text
+  | -- | Ambiguous: question, user response
+    SideSessionAmbiguous Text Text
+  deriving stock (Show, Eq, Generic)
+
+instance Disp SideSessionResult where
+  disp = \case
+    SideSessionSuccess q resp result ->
+      section 4 (successText "✓ Side Session Complete") $
+        vsep
+          [ label "Question:" <+> wrappedText q,
+            label "User said:" <+> "\"" <> wrappedText resp <> "\"",
+            label "Result:" <+> successText (wrappedText result)
+          ]
+    SideSessionAmbiguous q resp ->
+      section 4 (dimText "⏸ Side Session - Ambiguous") $
+        vsep
+          [ label "Question:" <+> wrappedText q,
+            label "User said:" <+> "\"" <> wrappedText resp <> "\"",
+            dimText "Could not determine answer from response"
+          ]
+
+--------------------------------------------------------------------------------
+-- Session Info
+--------------------------------------------------------------------------------
+
+-- | Session information displayed at startup.
+-- Shows seeded context variables from the session.
+data SessionInfo = SessionInfo
+  { seededContext :: [(Text, Text)] -- (slot name, value)
+  }
+  deriving stock (Show, Eq, Generic)
+
+instance Disp SessionInfo where
+  disp (SessionInfo ctx) =
+    if null ctx
+      then mempty
+      else
+        section 0 (label "Session initialized:") $
+          vsep
+            [ indent 2 $ label "•" <+> pretty slot <+> "=" <+> successText (pretty val)
+            | (slot, val) <- ctx
+            ]

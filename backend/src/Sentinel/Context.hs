@@ -23,6 +23,7 @@ module Sentinel.Context
     ContextDecl (..),
     ContextDecls (..),
     SeedSpec (..),
+    AskableSpec (..),
     emptyContextDecls,
     declareContext,
     lookupContextDecl,
@@ -32,7 +33,7 @@ where
 import Data.Map.Strict qualified as M
 import Data.Time (UTCTime)
 import Pre
-import Sentinel.Solver.Types (Scalar (..))
+import Sentinel.Solver.Types (Scalar (..), ScalarType (..))
 
 --------------------------------------------------------------------------------
 -- Context Store
@@ -92,19 +93,32 @@ setContext slot establishment store =
 --
 -- Declarations specify:
 -- - The name of the context slot
--- - Optionally, a predicate to query for candidate values
+-- - The type of the value
 -- - Optionally, a seed specification for pre-seeding from session
+-- - Optionally, an askable spec for asking the user
 data ContextDecl = ContextDecl
   { -- | The name of the context slot (e.g., "booking_of_interest")
     name :: Text,
-    -- | Predicate to query for candidates (e.g., "user_bookings")
-    -- When the solver blocks on this context, it can invoke this predicate
-    -- to find candidate values for the user to choose from.
-    candidateQuery :: Maybe Text,
+    -- | Type of the context value (for schema validation)
+    valueType :: ScalarType,
     -- | How to pre-seed this context from session data
     seedValue :: Maybe SeedSpec,
+    -- | If Just, this context can be established by asking the user
+    -- If Nothing, it can only be pre-seeded
+    askable :: Maybe AskableSpec,
     -- | Human-readable description for the LLM
     description :: Text
+  }
+  deriving stock (Show, Eq, Generic)
+  deriving anyclass (ToJSON, FromJSON)
+
+-- | Specification for how to ask the user for a context value.
+data AskableSpec = AskableSpec
+  { -- | Template for the question to ask (e.g., "Which booking are you asking about?")
+    questionTemplate :: Text,
+    -- | Explicit candidate values (can be empty for open questions)
+    -- The LLM can also provide candidates dynamically when calling the Ask tool
+    candidates :: [Scalar]
   }
   deriving stock (Show, Eq, Generic)
   deriving anyclass (ToJSON, FromJSON)
@@ -136,4 +150,4 @@ declareContext decl (ContextDecls ds) =
 
 -- | Look up a context declaration by name.
 lookupContextDecl :: Text -> ContextDecls -> Maybe ContextDecl
-lookupContextDecl name (ContextDecls ds) = M.lookup name ds
+lookupContextDecl ctxName (ContextDecls ds) = M.lookup ctxName ds

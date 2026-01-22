@@ -25,7 +25,7 @@ where
 import Data.Map.Strict qualified as M
 import Data.Text qualified as Text
 import Pre
-import Sentinel.Solver.Types (Scalar (..), scalarToText)
+import Sentinel.Solver.Types (Scalar (..), ScalarType (..), scalarToText)
 
 --------------------------------------------------------------------------------
 -- Askable Declaration
@@ -35,14 +35,14 @@ import Sentinel.Solver.Types (Scalar (..), scalarToText)
 --
 -- Askable predicates are facts that must be established by user confirmation.
 -- Each declaration includes:
--- - The predicate name and arity
+-- - The predicate name and typed arguments
 -- - A template for the question to ask
 -- - What kind of evidence establishes this fact
 data AskableDecl = AskableDecl
   { -- | The predicate name (e.g., "user_confirms_cancellation")
     predicate :: Text,
-    -- | Number of arguments (e.g., 1 for user_confirms_cancellation(User))
-    arity :: Int,
+    -- | Types of each argument (e.g., [TextType] for user_confirms_cancellation(User))
+    argumentTypes :: [ScalarType],
     -- | Template for the question to ask the user.
     -- Use {0}, {1}, etc. for argument placeholders.
     questionTemplate :: Text,
@@ -87,7 +87,7 @@ declareAskable decl (AskableRegistry as) =
 
 -- | Look up an askable declaration by predicate name.
 lookupAskable :: Text -> AskableRegistry -> Maybe AskableDecl
-lookupAskable name (AskableRegistry as) = M.lookup name as
+lookupAskable askName (AskableRegistry as) = M.lookup askName as
 
 --------------------------------------------------------------------------------
 -- Question Formatting
