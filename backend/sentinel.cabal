@@ -42,6 +42,7 @@ library
       Sentinel.Solver.Types
       Sentinel.Tool
       Sentinel.Toolkit
+      Sentinel.Verbosity
   other-modules:
       Paths_sentinel
   hs-source-dirs:
@@ -84,6 +85,7 @@ library
     , logict
     , mtl
     , openai
+    , optparse-applicative
     , optparse-generic
     , pretty-simple
     , prettyprinter
@@ -142,6 +144,7 @@ executable repl
     , logict
     , mtl
     , openai
+    , optparse-applicative
     , optparse-generic
     , pretty-simple
     , prettyprinter
@@ -202,6 +205,7 @@ test-suite all
     , logict
     , mtl
     , openai
+    , optparse-applicative
     , optparse-generic
     , pretty-simple
     , prettyprinter

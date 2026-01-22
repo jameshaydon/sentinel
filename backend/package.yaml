@@ -55,6 +55,7 @@ dependencies:
   - logict
   - comonad
   - optparse-generic
+  - optparse-applicative
 
 library:
   source-dirs: src
