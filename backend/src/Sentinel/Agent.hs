@@ -12,6 +12,7 @@ where
 
 import Control.Monad.State.Strict
 import Data.Aeson qualified as Aeson
+import Data.IORef (readIORef)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as T.Encoding
 import Data.Vector qualified as V
@@ -22,8 +23,9 @@ import Sentinel.Context (AskableSpec (..), ContextDecl (..), ContextStore)
 import Sentinel.LLM (Message (..))
 import Sentinel.LLM qualified as LLM
 import Sentinel.Output qualified as Output
-import Sentinel.Sentinel (PendingUserInput (..), Sentinel, SentinelEnv, SentinelResult (..))
+import Sentinel.Sentinel (PendingUserInput (..), Sentinel, SentinelEnv (..), SentinelResult (..))
 import Sentinel.Sentinel qualified as Sentinel
+import Sentinel.Verbosity (Verbosity (..))
 import Sentinel.Solver.Askable (AskableDecl (..), formatQuestion)
 import Sentinel.Solver.Types (Scalar (..), UserInputType (..), scalarToText)
 import Sentinel.Tool (SideSessionSpec (..))
@@ -445,8 +447,9 @@ agentLoop = do
           allTools = env.tools ++ (Tool.toLLMTool <$> dynamicTools)
           openAITools = Tool.toOpenAITool <$> allTools
 
-      -- Log available tools before LLM call
-      liftIO $ do
+      -- Log available tools before LLM call (if debug enabled)
+      verbosityLevel <- liftIO $ readIORef env.sentinelEnv.verbosity
+      when (verbosityLevel >= Basic) $ liftIO $ do
         putStrLn $ "[DEBUG] blockedContextVars: " <> show blockedCtx
         putStrLn $ "[DEBUG] blockedAskables: " <> show blockedAsk
         putStrLn $ "[DEBUG] Tools available to LLM: " <> show ((.name) <$> allTools)

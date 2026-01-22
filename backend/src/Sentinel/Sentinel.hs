@@ -52,11 +52,17 @@ module Sentinel.Sentinel
     findPendingAskable,
     getPendingContextVars,
     getPendingAskables,
+
+    -- * Verbosity / Debug
+    Verbosity (..),
+    getVerbosity,
+    setVerbosity,
+    debugLog,
   )
 where
 
 import Data.Aeson (Value)
-import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Map.Strict qualified as M
 import Data.Text qualified as T
 import Data.Time (UTCTime, getCurrentTime)
@@ -66,6 +72,8 @@ import Sentinel.Context qualified as Context
 import Sentinel.Facts (AskableFactStore, BaseFactStore, HasFactStore (..), emptyAskableFactStore)
 import Sentinel.Facts qualified as Facts
 import Sentinel.Solver.Types (Scalar (..), UserInputType (..))
+import Sentinel.Verbosity (Verbosity (..))
+import Prelude qualified
 
 --------------------------------------------------------------------------------
 -- User Questions
@@ -161,7 +169,9 @@ data SentinelEnv db = SentinelEnv
     -- | The askable fact store (user confirmations)
     askableStore :: IORef AskableFactStore,
     -- | Pending user inputs awaiting response
-    pendingUserInputs :: IORef [PendingUserInput]
+    pendingUserInputs :: IORef [PendingUserInput],
+    -- | Debug verbosity level (mutable for runtime adjustment)
+    verbosity :: IORef Verbosity
   }
   deriving stock (Generic)
 
@@ -170,12 +180,13 @@ data SentinelEnv db = SentinelEnv
 -- The 'SessionData' and 'ContextDecls' are used to pre-seed context variables.
 -- For each context declaration with a 'FromSession' seed spec, if the corresponding
 -- session field is present, the context variable is pre-populated.
-newSentinelEnv :: db -> BaseFactStore -> SessionData -> ContextDecls -> IO (SentinelEnv db)
-newSentinelEnv initialDb initialFacts sessionData contextDecls = do
+newSentinelEnv :: db -> BaseFactStore -> SessionData -> ContextDecls -> Verbosity -> IO (SentinelEnv db)
+newSentinelEnv initialDb initialFacts sessionData contextDecls initialVerbosity = do
   dbRef <- newIORef initialDb
   factsRef <- newIORef initialFacts
   askableRef <- newIORef emptyAskableFactStore
   pendingUserInputsRef <- newIORef []
+  verbosityRef <- newIORef initialVerbosity
 
   -- Seed context from session data
   now <- getCurrentTime
@@ -188,7 +199,8 @@ newSentinelEnv initialDb initialFacts sessionData contextDecls = do
         facts = factsRef,
         contextStore = contextRef,
         askableStore = askableRef,
-        pendingUserInputs = pendingUserInputsRef
+        pendingUserInputs = pendingUserInputsRef,
+        verbosity = verbosityRef
       }
 
 -- | Seed context variables from session data based on context declarations.
@@ -416,3 +428,25 @@ getPendingAskables = do
   pending <- getPendingUserInputs
   pure [(p.pendingName, p.pendingArguments) | p <- pending, p.pendingType == AskableInput]
 
+--------------------------------------------------------------------------------
+-- Verbosity / Debug Operations
+--------------------------------------------------------------------------------
+
+-- | Get the current verbosity level.
+getVerbosity :: SentinelM db Verbosity
+getVerbosity = do
+  verbRef <- asks (.verbosity)
+  liftIO $ readIORef verbRef
+
+-- | Set the verbosity level.
+setVerbosity :: Verbosity -> SentinelM db ()
+setVerbosity level = do
+  verbRef <- asks (.verbosity)
+  liftIO $ writeIORef verbRef level
+
+-- | Output debug message if current verbosity is at or above the specified level.
+debugLog :: Verbosity -> Text -> SentinelM db ()
+debugLog level msg = do
+  currentLevel <- getVerbosity
+  when (currentLevel >= level) $
+    liftIO $ Prelude.putStrLn $ "[DEBUG] " <> T.unpack msg

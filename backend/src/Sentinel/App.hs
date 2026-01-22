@@ -12,7 +12,7 @@ import Pre (Ann, Doc, Generic, indent, pretty, putDocLn, vsep, wrappedText)
 import Sentinel.Agent (AgentConfig (..), defaultConfig)
 import Sentinel.Example (Example (..), runExample)
 import Sentinel.LLM qualified as LLM
-import Sentinel.Sentinel (SessionData (..))
+import Sentinel.Sentinel (SessionData (..), Verbosity (..))
 import System.Environment (lookupEnv)
 import Prelude
 
@@ -57,7 +57,8 @@ missingKeyDoc =
 -- | CLI options for the sentinel executable.
 data Options w = Options
   { example :: w ::: T.Text <?> "Example to run (airlogic, aircanada)",
-    user :: w ::: T.Text <?> "User ID for the session"
+    user :: w ::: T.Text <?> "User ID for the session",
+    verbosity :: w ::: Maybe Verbosity <?> "Verbosity level (silent, basic, detailed, verbose)"
   }
   deriving stock (Generic)
 
@@ -66,8 +67,8 @@ instance ParseRecord (Options Wrapped)
 deriving stock instance Show (Options Unwrapped)
 
 -- | Run with a specific example and user ID.
-runWithExample :: Example db -> T.Text -> IO ()
-runWithExample ex userId = do
+runWithExample :: Example db -> T.Text -> Verbosity -> IO ()
+runWithExample ex userId verbosityLevel = do
   putDocLn (bannerDoc ex)
   maybeKey <- lookupEnv "OPENAI_API_KEY"
   case maybeKey of
@@ -77,15 +78,16 @@ runWithExample ex userId = do
       let modelName = T.pack (show (config.llmConfig.model :: LLM.Model))
           sessionData = SessionData {userId = Just userId}
       putDocLn (readyDoc modelName ex)
-      runExample config ex sessionData
+      runExample config ex sessionData verbosityLevel
 
 -- | Main entry point.
 main :: IO ()
 main = do
   opts :: Options Unwrapped <- unwrapRecord "Sentinel - Governance middleware for LLM agents"
+  let verbosityLevel = maybe Silent id opts.verbosity
   case opts.example of
-    "airlogic" -> runWithExample airLogicExample opts.user
-    "aircanada" -> runWithExample airCanadaExample opts.user
+    "airlogic" -> runWithExample airLogicExample opts.user verbosityLevel
+    "aircanada" -> runWithExample airCanadaExample opts.user verbosityLevel
     other -> do
       putDocLn $ "Unknown example: " <> pretty other
       putDocLn ""

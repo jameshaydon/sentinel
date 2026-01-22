@@ -16,9 +16,10 @@ import Sentinel.Agent (AgentConfig (..), Message, runAgent)
 import Sentinel.Context (ContextEstablishment (..), ContextStore (..), EstablishmentMethod (..))
 import Sentinel.Facts qualified as Facts
 import Sentinel.Output qualified as Output
-import Sentinel.Sentinel (Sentinel, SentinelEnv (..), SessionData, newSentinelEnv)
+import Sentinel.Sentinel (Sentinel, SentinelEnv (..), SessionData, Verbosity (..), newSentinelEnv, runSentinelM, setVerbosity)
 import Sentinel.Solver.Types (scalarToText)
 import Sentinel.Toolkit (Toolkit (..), toolkitSentinel)
+import Sentinel.Verbosity (parseVerbosity)
 import System.Console.Haskeline (InputT, defaultSettings, getInputLine, outputStrLn, runInputT)
 
 -- | An example packages everything needed to run a sentinel demo.
@@ -32,13 +33,13 @@ data Example db = Example
   }
 
 -- | Run an example with the given agent configuration and session data.
-runExample :: AgentConfig -> Example db -> SessionData -> IO ()
-runExample config ex sessionData = do
+runExample :: AgentConfig -> Example db -> SessionData -> Verbosity -> IO ()
+runExample config ex sessionData verbosityLevel = do
   let sysPrompt = "Be terse and concise in your responses. This is a demo/prototype.\n\n" <> ex.toolkit.systemPrompt
       sentinel = toolkitSentinel ex.toolkit
       facts = Facts.emptyBaseFactStore
 
-  sentinelEnv <- newSentinelEnv ex.initialDB facts sessionData ex.toolkit.contextDecls
+  sentinelEnv <- newSentinelEnv ex.initialDB facts sessionData ex.toolkit.contextDecls verbosityLevel
 
   -- Display seeded context
   ctxStore <- readIORef sentinelEnv.contextStore
@@ -80,6 +81,17 @@ repl config toolkit systemPrompt sentinel sentinelEnv goodbye history turnCount 
         Just input
           | T.toLower (T.strip (T.pack input)) `elem` ["quit", "exit", "q"] ->
               outputStrLn (T.unpack $ "\n" <> goodbye)
+          | "/debug " `T.isPrefixOf` T.pack input -> do
+              let levelStr = T.strip $ T.drop 7 (T.pack input)
+              case parseVerbosity (T.unpack levelStr) of
+                Just level -> do
+                  liftIO $ runSentinelM sentinelEnv (setVerbosity level)
+                  outputStrLn $ "Debug level set to: " <> show level
+                  loop hist currentTurnCount
+                Nothing -> do
+                  outputStrLn $ "Invalid debug level: " <> T.unpack levelStr
+                  outputStrLn "Valid levels: silent, basic, detailed, verbose"
+                  loop hist currentTurnCount
           | otherwise -> do
               (response, newHist, newTurnCount) <-
                 liftIO $ runAgent config toolkit systemPrompt sentinel sentinelEnv hist currentTurnCount (T.pack input)
