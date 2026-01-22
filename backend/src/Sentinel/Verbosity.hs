@@ -1,6 +1,7 @@
 -- | Verbosity levels for debug output.
 module Sentinel.Verbosity
   ( Verbosity (..),
+    parseVerbosity,
   )
 where
 

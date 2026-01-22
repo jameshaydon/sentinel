@@ -8,7 +8,6 @@ module Sentinel.Example
   )
 where
 
-import Data.Char qualified as Char
 import Data.IORef (readIORef)
 import Data.Map.Strict qualified as M
 import Data.Text qualified as T
@@ -20,8 +19,8 @@ import Sentinel.Output qualified as Output
 import Sentinel.Sentinel (Sentinel, SentinelEnv (..), SessionData, Verbosity (..), newSentinelEnv, runSentinelM, setVerbosity)
 import Sentinel.Solver.Types (scalarToText)
 import Sentinel.Toolkit (Toolkit (..), toolkitSentinel)
+import Sentinel.Verbosity (parseVerbosity)
 import System.Console.Haskeline (InputT, defaultSettings, getInputLine, outputStrLn, runInputT)
-import Text.Read (readMaybe)
 
 -- | An example packages everything needed to run a sentinel demo.
 data Example db = Example
@@ -84,7 +83,7 @@ repl config toolkit systemPrompt sentinel sentinelEnv goodbye history turnCount 
               outputStrLn (T.unpack $ "\n" <> goodbye)
           | "/debug " `T.isPrefixOf` T.pack input -> do
               let levelStr = T.strip $ T.drop 7 (T.pack input)
-              case parseVerbosityLevel (T.unpack levelStr) of
+              case parseVerbosity (T.unpack levelStr) of
                 Just level -> do
                   liftIO $ runSentinelM sentinelEnv (setVerbosity level)
                   outputStrLn $ "Debug level set to: " <> show level
@@ -98,10 +97,3 @@ repl config toolkit systemPrompt sentinel sentinelEnv goodbye history turnCount 
                 liftIO $ runAgent config toolkit systemPrompt sentinel sentinelEnv hist currentTurnCount (T.pack input)
               outputStrLn (T.unpack $ "\n" <> response <> "\n")
               loop newHist newTurnCount
-
--- | Parse a verbosity level from a string (case-insensitive).
-parseVerbosityLevel :: String -> Maybe Verbosity
-parseVerbosityLevel s = readMaybe (capitalize s)
-  where
-    capitalize [] = []
-    capitalize (c : cs) = Char.toUpper c : fmap Char.toLower cs
