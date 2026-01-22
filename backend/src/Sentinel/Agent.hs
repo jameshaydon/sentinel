@@ -22,7 +22,7 @@ import Sentinel.Context (AskableSpec (..), ContextDecl (..), ContextStore)
 import Sentinel.LLM (Message (..))
 import Sentinel.LLM qualified as LLM
 import Sentinel.Output qualified as Output
-import Sentinel.Sentinel (Sentinel, SentinelEnv, SentinelResult (..))
+import Sentinel.Sentinel (PendingUserInput (..), Sentinel, SentinelEnv, SentinelResult (..))
 import Sentinel.Sentinel qualified as Sentinel
 import Sentinel.Solver.Askable (AskableDecl (..), formatQuestion)
 import Sentinel.Solver.Types (Scalar (..), UserInputType (..), scalarToText)
@@ -62,15 +62,12 @@ defaultConfig key = do
 
 -- | Agent state - only contains conversation-related state.
 -- Database and facts are now managed by Sentinel via SentinelEnv.
+-- Blocked items are queried directly from Sentinel (no duplicate state).
 data AgentState = AgentState
   { -- | Messages stored in reverse order (newest first) for efficient prepending.
     messages :: [Message],
     turnCount :: !Int,
-    iterationCount :: !Int,
-    -- | Context variables that are currently blocked (need Ask tools)
-    blockedContextVars :: [Text],
-    -- | Askable predicates that are currently blocked (predicate name, arguments)
-    blockedAskables :: [(Text, [Scalar])]
+    iterationCount :: !Int
   }
   deriving stock (Generic)
 
@@ -138,35 +135,31 @@ handleAskTool callId toolName = do
   env <- ask
   let name = T.drop 4 toolName -- Remove "Ask_" prefix
 
-  -- Check if it's a blocked context variable or askable
-  blockedCtx <- use #blockedContextVars
-  blockedAsk <- use #blockedAskables
+  -- Query Sentinel directly to check if this is a pending context or askable
+  mPendingCtx <- liftIO $ Sentinel.runSentinelM env.sentinelEnv (Sentinel.findPendingContext name)
+  mPendingAsk <- liftIO $ Sentinel.runSentinelM env.sentinelEnv (Sentinel.findPendingAskable name)
 
-  if name `elem` blockedCtx
-    then do
+  case mPendingCtx of
+    Just _pending -> do
       -- Context variable side session
       case Toolkit.lookupContextDecl name env.toolkit.contextDecls of
         Nothing -> pure $ ToolMsg callId ("ERROR: Unknown context variable: " <> name)
         Just decl -> do
           let spec = ContextSession name decl
           summary <- runSideSession spec
-          -- Clear from blocked list
-          #blockedContextVars %= filter (/= name)
-          -- Clear from Sentinel's pending list too
+          -- Clear from Sentinel's pending list
           liftIO $ Sentinel.runSentinelM env.sentinelEnv (Sentinel.clearPendingUserInput name)
           pure $ ToolMsg callId summary
-    else case find (\(predName, _) -> predName == name) blockedAsk of
-      Just (predName, args) -> do
+    Nothing -> case mPendingAsk of
+      Just pending -> do
         -- Askable side session
-        case Toolkit.lookupAskable predName env.toolkit.askables of
-          Nothing -> pure $ ToolMsg callId ("ERROR: Unknown askable predicate: " <> predName)
+        case Toolkit.lookupAskable name env.toolkit.askables of
+          Nothing -> pure $ ToolMsg callId ("ERROR: Unknown askable predicate: " <> name)
           Just decl -> do
-            let spec = AskableSession predName decl args
+            let spec = AskableSession name decl pending.pendingArguments
             summary <- runSideSession spec
-            -- Clear from blocked list
-            #blockedAskables %= filter ((/= predName) . fst)
-            -- Clear from Sentinel's pending list too
-            liftIO $ Sentinel.runSentinelM env.sentinelEnv (Sentinel.clearPendingUserInput predName)
+            -- Clear from Sentinel's pending list
+            liftIO $ Sentinel.runSentinelM env.sentinelEnv (Sentinel.clearPendingUserInput name)
             pure $ ToolMsg callId summary
       Nothing ->
         pure $ ToolMsg callId ("ERROR: " <> name <> " is not currently blocked. Call the relevant action tool first.")
@@ -193,22 +186,10 @@ handleRegularTool callId toolName argsJson = do
         Denied reason -> do
           pure $ ToolMsg callId ("ERROR: " <> reason)
         AskUser question -> do
-          -- Add to blocked list and return block information
-          addBlockedItem question
+          -- Sentinel already registered the pending user input
+          -- Return block information for the LLM
           let blockInfo = formatBlockForLLM question
           pure $ ToolMsg callId blockInfo
-
--- | Add a blocked item to the state based on the question type.
-addBlockedItem :: Sentinel.UserQuestion -> AgentM db ()
-addBlockedItem question =
-  case (question.askablePredicate, question.askableArguments) of
-    (Just predName, Just args) ->
-      -- Askable predicate
-      #blockedAskables %= ((predName, args) :)
-    _ ->
-      -- Context variable - extract the name from factDescription
-      let ctxName = T.drop 9 question.factDescription -- Remove "Context: " prefix
-       in #blockedContextVars %= (ctxName :)
 
 -- | Format blocked user question for the LLM to understand what to do.
 formatBlockForLLM :: Sentinel.UserQuestion -> Text
@@ -216,18 +197,16 @@ formatBlockForLLM question =
   T.unlines
     [ "BLOCKED: Guard cannot proceed without additional information.",
       "",
-      "Type: " <> question.factDescription,
+      "Type: " <> Sentinel.describeUserInput question,
       "Question: " <> question.questionText,
       "",
-      case (question.askablePredicate, question.askableArguments) of
-        (Just predName, Just args) ->
-          "To resolve: Call Ask_" <> predName <> " to prompt the user."
+      case question.inputType of
+        AskableInput ->
+          "To resolve: Call Ask_" <> question.inputName <> " to prompt the user."
             <> "\n  Arguments: "
-            <> formatArgs args
-        _ ->
-          -- Context variable - extract the name from factDescription
-          let ctxName = T.drop 9 question.factDescription -- Remove "Context: " prefix
-           in "To resolve: Call Ask_" <> ctxName <> " to prompt the user."
+            <> formatArgs question.arguments
+        ContextInput ->
+          "To resolve: Call Ask_" <> question.inputName <> " to prompt the user."
     ]
   where
     formatArgs args = "[" <> T.intercalate ", " (scalarToText <$> args) <> "]"
@@ -427,9 +406,7 @@ runAgent config toolkit baseSystemPrompt sentinel sentinelEnv history turnCount 
         AgentState
           { messages = UserMsg userQuery : history,
             turnCount = newTurnCount,
-            iterationCount = 0,
-            blockedContextVars = [],
-            blockedAskables = []
+            iterationCount = 0
           }
   (response, finalState) <- runAgentM env initialState agentLoop
   pure (response, finalState.messages, finalState.turnCount)
@@ -459,22 +436,11 @@ agentLoop = do
       liftIO $ putDispLn (Output.Iteration iteration)
       #iterationCount += 1
 
-      -- Sync blocked items from Sentinel's pendingUserInputs
-      -- (These are populated by CheckGuard_* tools but not through AskUser path)
-      pending <- liftIO $ Sentinel.runSentinelM env.sentinelEnv Sentinel.getPendingUserInputs
-      forM_ pending $ \p -> case p.pendingType of
-        ContextInput -> do
-          current <- use #blockedContextVars
-          unless (p.pendingName `elem` current) $
-            #blockedContextVars %= (p.pendingName :)
-        AskableInput -> do
-          current <- use #blockedAskables
-          unless (any ((== p.pendingName) . fst) current) $
-            #blockedAskables %= ((p.pendingName, p.pendingArguments) :)
+      -- Query Sentinel directly for pending user inputs
+      blockedCtx <- liftIO $ Sentinel.runSentinelM env.sentinelEnv Sentinel.getPendingContextVars
+      blockedAsk <- liftIO $ Sentinel.runSentinelM env.sentinelEnv Sentinel.getPendingAskables
 
-      -- Get blocked items and generate dynamic Ask tools
-      blockedCtx <- use #blockedContextVars
-      blockedAsk <- use #blockedAskables
+      -- Generate dynamic Ask tools based on pending inputs
       let dynamicTools = Toolkit.makeDynamicAskTools env.toolkit blockedCtx blockedAsk
           allTools = env.tools ++ (Tool.toLLMTool <$> dynamicTools)
           openAITools = Tool.toOpenAITool <$> allTools

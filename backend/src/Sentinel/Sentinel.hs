@@ -45,6 +45,13 @@ module Sentinel.Sentinel
 
     -- * User Questions
     UserQuestion (..),
+    describeUserInput,
+
+    -- * Pending User Input Queries
+    findPendingContext,
+    findPendingAskable,
+    getPendingContextVars,
+    getPendingAskables,
   )
 where
 
@@ -66,16 +73,24 @@ import Sentinel.Solver.Types (Scalar (..), UserInputType (..))
 
 -- | A question to ask the user when facts cannot be established via queries.
 data UserQuestion = UserQuestion
-  { -- | The question text to present to the user
+  { -- | The type of input (context or askable)
+    inputType :: UserInputType,
+    -- | The name of the context variable or askable predicate
+    inputName :: Text,
+    -- | Arguments (empty for context, predicate args for askable)
+    arguments :: [Scalar],
+    -- | The question text to present to the user
     questionText :: Text,
-    -- | Description of what fact we're trying to establish
-    factDescription :: Text,
-    -- | The askable predicate name (if this question is for an askable)
-    askablePredicate :: Maybe Text,
-    -- | The arguments to the askable predicate (if applicable)
-    askableArguments :: Maybe [Scalar]
+    -- | Candidate values (for context variables)
+    candidates :: [Scalar]
   }
   deriving stock (Show, Eq, Generic)
+
+-- | Helper for display (replaces factDescription usage)
+describeUserInput :: UserQuestion -> Text
+describeUserInput q = case q.inputType of
+  ContextInput -> "Context: " <> q.inputName
+  AskableInput -> "Askable: " <> q.inputName
 
 --------------------------------------------------------------------------------
 -- Pending User Input
@@ -376,4 +391,28 @@ clearPendingUserInput :: Text -> SentinelM db ()
 clearPendingUserInput name = do
   pendingRef <- asks (.pendingUserInputs)
   liftIO $ modifyIORef' pendingRef (filter (\p -> p.pendingName /= name))
+
+-- | Find a pending context variable by name.
+findPendingContext :: Text -> SentinelM db (Maybe PendingUserInput)
+findPendingContext name = do
+  pending <- getPendingUserInputs
+  pure $ find (\p -> p.pendingType == ContextInput && p.pendingName == name) pending
+
+-- | Find a pending askable by name.
+findPendingAskable :: Text -> SentinelM db (Maybe PendingUserInput)
+findPendingAskable name = do
+  pending <- getPendingUserInputs
+  pure $ find (\p -> p.pendingType == AskableInput && p.pendingName == name) pending
+
+-- | Get all pending context variable names.
+getPendingContextVars :: SentinelM db [Text]
+getPendingContextVars = do
+  pending <- getPendingUserInputs
+  pure [p.pendingName | p <- pending, p.pendingType == ContextInput]
+
+-- | Get all pending askables (predicate name, arguments).
+getPendingAskables :: SentinelM db [(Text, [Scalar])]
+getPendingAskables = do
+  pending <- getPendingUserInputs
+  pure [(p.pendingName, p.pendingArguments) | p <- pending, p.pendingType == AskableInput]
 

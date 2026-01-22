@@ -221,21 +221,15 @@ evaluateToolGuard toolkit tool args = do
             block.question
             [] -- No candidates provided from solver
           -- Convert block to user question
-          let desc = case block.inputType of
-                ContextInput -> "Context: " <> block.name
-                AskableInput -> "Askable: " <> block.name
-           in pure
-                $ ToolGuardNeedsInput
-                  UserQuestion
-                    { questionText = block.question,
-                      factDescription = desc,
-                      askablePredicate = case block.inputType of
-                        ContextInput -> Nothing
-                        AskableInput -> Just block.name,
-                      askableArguments = case block.inputType of
-                        ContextInput -> Nothing
-                        AskableInput -> Just block.arguments
-                    }
+          pure
+            $ ToolGuardNeedsInput
+              UserQuestion
+                { inputType = block.inputType,
+                  inputName = block.name,
+                  arguments = block.arguments,
+                  questionText = block.question,
+                  candidates = []
+                }
         Failure failures ->
           pure $ ToolGuardDenied (formatSolverFailures failures)
 
@@ -360,12 +354,9 @@ checkGuardExecute tk guardName args = do
   -- Extract blocked items from NeedsInput result
   let blocked = case result of
         ToolGuardNeedsInput question ->
-          case (question.askablePredicate, question.askableArguments) of
-            (Just predName, Just predArgs) -> [BlockedAskable predName predArgs]
-            _ ->
-              -- Context variable - extract name from factDescription (remove "Context: " prefix)
-              let ctxName = T.drop 9 question.factDescription
-               in [BlockedContext ctxName]
+          case question.inputType of
+            AskableInput -> [BlockedAskable question.inputName question.arguments]
+            ContextInput -> [BlockedContext question.inputName]
         _ -> []
 
   pure
@@ -390,22 +381,21 @@ formatGuardResult claimName = \case
   ToolGuardDenied reason ->
     "NOT VERIFIED: " <> claimName <> " failed. Reason: " <> reason
   ToolGuardNeedsInput question ->
-    case (question.askablePredicate, question.askableArguments) of
-      (Just predName, Just args) ->
+    case question.inputType of
+      AskableInput ->
         T.unlines
           [ "NEEDS INFO: " <> question.questionText,
-            "Predicate: " <> predName,
-            "Arguments: " <> formatScalarList args,
+            "Predicate: " <> question.inputName,
+            "Arguments: " <> formatScalarList question.arguments,
             "",
-            "To resolve: Call Ask_" <> predName <> " to prompt the user."
+            "To resolve: Call Ask_" <> question.inputName <> " to prompt the user."
           ]
-      _ ->
-        let ctxName = T.drop 9 question.factDescription -- Remove "Context: " prefix
-         in T.unlines
-              [ "NEEDS INFO: " <> question.questionText,
-                "",
-                "To resolve: Call Ask_" <> ctxName <> " to prompt the user."
-              ]
+      ContextInput ->
+        T.unlines
+          [ "NEEDS INFO: " <> question.questionText,
+            "",
+            "To resolve: Call Ask_" <> question.inputName <> " to prompt the user."
+          ]
 
 -- | Format a list of scalars for display.
 formatScalarList :: [Scalar] -> Text
