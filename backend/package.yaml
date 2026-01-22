@@ -54,6 +54,7 @@ dependencies:
   - repline
   - logict
   - comonad
+  - optparse-generic
 
 library:
   source-dirs: src

@@ -84,6 +84,7 @@ library
     , logict
     , mtl
     , openai
+    , optparse-generic
     , pretty-simple
     , prettyprinter
     , prettyprinter-ansi-terminal
@@ -141,6 +142,7 @@ executable repl
     , logict
     , mtl
     , openai
+    , optparse-generic
     , pretty-simple
     , prettyprinter
     , prettyprinter-ansi-terminal
@@ -200,6 +202,7 @@ test-suite all
     , logict
     , mtl
     , openai
+    , optparse-generic
     , pretty-simple
     , prettyprinter
     , prettyprinter-ansi-terminal

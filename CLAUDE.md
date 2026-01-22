@@ -15,8 +15,9 @@ nix flake check # run all nix flake checks
 
 ## Running
 ```bash
-cd backend && cabal run repl -- <example>
-# Examples: airlogic, aircanada
+cabal run repl -- --example airlogic --user usr_sarah_chen
+cabal run repl -- --example aircanada --user usr_james_doe
+cabal run repl -- --help  # Show CLI options
 ```
 
 ## Navigation Guide
