@@ -23,6 +23,7 @@ import OpenAI.V1.Chat.Completions qualified as Chat
 import OpenAI.V1.Models (Model)
 import OpenAI.V1.Tool qualified as OpenAI
 import OpenAI.V1.ToolCall (ToolCall)
+import OpenAI.V1.ToolCall qualified as ToolCall
 import Pre
 import Servant.Client (ClientEnv)
 
@@ -91,6 +92,18 @@ toOpenAIMessage = \case
 -- LLM API
 --------------------------------------------------------------------------------
 
+-- | Log a tool call for debugging (compact single-line format).
+logToolCall :: ToolCall -> IO ()
+logToolCall (ToolCall.ToolCall_Function {function = fn}) =
+  putStrLn $ "[LLM Tool] " <> T.unpack fn.name <> " " <> T.unpack fn.arguments
+
+-- | Log all tool calls from an LLM response.
+logToolCalls :: Chat.Message Text -> IO ()
+logToolCalls = \case
+  Chat.Assistant {tool_calls = Just calls} | not (Vector.null calls) ->
+    traverse_ logToolCall calls
+  _ -> pure ()
+
 -- | Call the LLM chat completion API.
 callChatCompletion ::
   LLMConfig ->
@@ -122,9 +135,11 @@ callChatCompletion config systemPrompt msgs tools = do
                 else Just OpenAI.ToolChoiceAuto
           }
   result <- try @SomeException (methods.createChatCompletion request)
-  pure $ case result of
-    Left err -> Left (T.pack (show err))
+  case result of
+    Left err -> pure $ Left (T.pack (show err))
     Right ChatCompletionObject {choices} ->
       case Vector.uncons choices of
-        Nothing -> Left "No choices returned from API"
-        Just (Choice {message}, _) -> Right message
+        Nothing -> pure $ Left "No choices returned from API"
+        Just (Choice {message}, _) -> do
+          logToolCalls message
+          pure $ Right message
