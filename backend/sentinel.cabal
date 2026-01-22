@@ -35,6 +35,7 @@ library
       Sentinel.Pretty
       Sentinel.Schema
       Sentinel.Sentinel
+      Sentinel.SideSession
       Sentinel.Solver
       Sentinel.Solver.Askable
       Sentinel.Solver.Combinators

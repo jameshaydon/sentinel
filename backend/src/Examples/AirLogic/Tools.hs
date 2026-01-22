@@ -98,12 +98,7 @@ airLogicSystemPrompt =
       "6. Bereavement: Partial refund with death certificate of immediate family member",
       "",
       "IMPORTANT INSTRUCTIONS:",
-      "1. Always verify the customer's identity before accessing their bookings",
-      "2. Check refund eligibility through all possible paths before processing",
-      "3. Clearly explain why a refund is approved or denied",
-      "4. Offer alternative options (vouchers, rebooking) when refund is not available",
-      "",
-      "Always be polite, professional, and empathetic with customers."
+      "- Check refund eligibility through all possible paths before processing"
     ]
 
 --------------------------------------------------------------------------------
@@ -304,9 +299,10 @@ issueFullRefundTool =
       guard = SolverGuardT "full_refund_eligibility" fullRefundGuard,
       execute = \_ -> do
         ctxStore <- lift getContextStore
-        bookingId <- getContext "booking_of_interest" ctxStore
-          & fmap scalarToText
-          ??: "booking_of_interest context not set"
+        bookingId <-
+          getContext "booking_of_interest" ctxStore
+            & fmap scalarToText
+            ??: "booking_of_interest context not set"
         db <- lift getDb
         case getBooking bookingId db of
           Nothing -> throwError $ "Booking not found: " <> bookingId
@@ -342,9 +338,10 @@ issuePartialRefundTool =
       guard = SolverGuardT "partial_refund_eligibility" partialRefundGuard,
       execute = \_ -> do
         ctxStore <- lift getContextStore
-        bookingId <- getContext "booking_of_interest" ctxStore
-          & fmap scalarToText
-          ??: "booking_of_interest context not set"
+        bookingId <-
+          getContext "booking_of_interest" ctxStore
+            & fmap scalarToText
+            ??: "booking_of_interest context not set"
         db <- lift getDb
         case getBooking bookingId db of
           Nothing -> throwError $ "Booking not found: " <> bookingId
@@ -381,9 +378,10 @@ issueVoucherTool =
       guard = SolverGuardT "voucher_eligibility" voucherGuard,
       execute = \_ -> do
         ctxStore <- lift getContextStore
-        bookingId <- getContext "booking_of_interest" ctxStore
-          & fmap scalarToText
-          ??: "booking_of_interest context not set"
+        bookingId <-
+          getContext "booking_of_interest" ctxStore
+            & fmap scalarToText
+            ??: "booking_of_interest context not set"
         db <- lift getDb
         case getBooking bookingId db of
           Nothing -> throwError $ "Booking not found: " <> bookingId

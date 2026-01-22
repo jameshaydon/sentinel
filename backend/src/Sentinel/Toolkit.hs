@@ -36,10 +36,11 @@ import Data.Map.Strict qualified as M
 import Data.Text qualified as T
 import Data.Text.Lazy qualified as T.Lazy
 import Pre
-import Sentinel.Context (ContextDecl (..), ContextDecls (..), AskableSpec (..), lookupContextDecl)
+import Sentinel.Context (AskableSpec (..), ContextDecl (..), ContextDecls (..), lookupContextDecl)
 import Sentinel.Facts (HasFactStore (..))
 import Sentinel.Facts qualified as Facts
 import Sentinel.Output qualified as Output
+import Sentinel.Schema qualified as Schema
 import Sentinel.Sentinel
   ( Sentinel (..),
     SentinelEnv (..),
@@ -63,9 +64,7 @@ import Sentinel.Solver.Types
     SolverSuccess (..),
     UserInputBlock (..),
     UserInputType (..),
-    scalarToText,
   )
-import Sentinel.Schema qualified as Schema
 import Sentinel.Tool (BlockedItem (..), LLMTool, Tool (..), ToolCategory (..), ToolGuard (..), ToolOutput (..), toLLMTool)
 
 --------------------------------------------------------------------------------
@@ -156,7 +155,8 @@ guardedCallImpl toolkit toolName args = do
 
 -- | Result of evaluating any type of tool guard.
 data ToolGuardResult
-  = ToolGuardPassed (NonEmpty SolverSuccess) -- ^ Carry the proof(s)
+  = -- | Carry the proof(s)
+    ToolGuardPassed (NonEmpty SolverSuccess)
   | ToolGuardDenied Text
   | ToolGuardNeedsInput UserQuestion
   deriving stock (Show, Eq)
@@ -220,7 +220,7 @@ evaluateToolGuard toolkit tool args = do
             block.arguments
             block.question
             [] -- No candidates provided from solver
-          -- Convert block to user question
+            -- Convert block to user question
           pure
             $ ToolGuardNeedsInput
               UserQuestion
@@ -283,21 +283,14 @@ summarizeFactsImpl = do
 --------------------------------------------------------------------------------
 
 -- | Instructions for the LLM to verify claims before stating them.
-verificationInstructions :: Toolkit db -> Text
-verificationInstructions tk =
+verificationInstructions :: Text
+verificationInstructions =
   T.unlines
     [ "",
       "VERIFICATION REQUIREMENT:",
-      "Before making claims about eligibility to the user, verify them first.",
-      "Available verification tools:",
-      T.unlines checkGuardDescriptions,
+      "Before making claims about eligibility to the user, use the CheckGuard tools to verify them first.",
       "Never state eligibility without verification."
     ]
-  where
-    checkGuardDescriptions =
-      [ "- CheckGuard_" <> tool.name <> ": verify " <> guardName
-      | (guardName, tool) <- extractVerifiableClaims tk
-      ]
 
 -- | Extract verifiable claims from action tools with SolverGuardT guards.
 --
@@ -323,9 +316,12 @@ makeCheckGuardTool tk guardName actionTool =
   Tool
     { name = "CheckGuard_" <> actionTool.name,
       description =
-        "Check eligibility for " <> actionTool.name <> " before attempting to execute it. "
+        "Check eligibility for "
+          <> actionTool.name
+          <> " before attempting to execute it. "
           <> "Returns whether eligible, not eligible, or needs more information. "
-          <> "Tool context: " <> actionTool.description,
+          <> "Tool context: "
+          <> actionTool.description,
       params = actionTool.params, -- Reuse exact schema
       category = DataTool,
       guard = NoGuard,
@@ -381,25 +377,7 @@ formatGuardResult claimName = \case
   ToolGuardDenied reason ->
     "NOT VERIFIED: " <> claimName <> " failed. Reason: " <> reason
   ToolGuardNeedsInput question ->
-    case question.inputType of
-      AskableInput ->
-        T.unlines
-          [ "NEEDS INFO: " <> question.questionText,
-            "Predicate: " <> question.inputName,
-            "Arguments: " <> formatScalarList question.arguments,
-            "",
-            "To resolve: Call Ask_" <> question.inputName <> " to prompt the user."
-          ]
-      ContextInput ->
-        T.unlines
-          [ "NEEDS INFO: " <> question.questionText,
-            "",
-            "To resolve: Call Ask_" <> question.inputName <> " to prompt the user."
-          ]
-
--- | Format a list of scalars for display.
-formatScalarList :: [Scalar] -> Text
-formatScalarList args = "[" <> T.intercalate ", " (scalarToText <$> args) <> "]"
+    "BLOCKED on " <> question.inputName
 
 -- | Add verification support to a toolkit.
 --
@@ -414,7 +392,7 @@ withVerification tk =
     { tools =
         makeCheckGuardTools tk
           <> tk.tools,
-      systemPrompt = tk.systemPrompt <> verificationInstructions tk
+      systemPrompt = tk.systemPrompt <> verificationInstructions
     }
 
 --------------------------------------------------------------------------------
@@ -454,7 +432,8 @@ makeDynamicAskContextTool decl =
    in Tool
         { name = "Ask_" <> decl.name,
           description =
-            "Ask the user: " <> questionText
+            "Ask the user: "
+              <> questionText
               <> " (This context variable is currently blocking the guard. "
               <> "Calling this will prompt the user immediately.)",
           params = Schema.objectSchema [] [],
@@ -481,7 +460,8 @@ makeDynamicAskAskableTool decl args =
    in Tool
         { name = "Ask_" <> decl.predicate,
           description =
-            "Ask the user: " <> formattedQuestion
+            "Ask the user: "
+              <> formattedQuestion
               <> " (This askable is currently blocking the guard. "
               <> "Calling this will prompt the user immediately.)",
           params = Schema.objectSchema [] [],

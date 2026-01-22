@@ -1,7 +1,10 @@
 -- | Helpers for constructing JSON Schema objects for tool parameters.
 module Sentinel.Schema
   ( objectSchema,
+    emptyObjectSchema,
     stringProp,
+    numberProp,
+    boolProp,
     enumProp,
   )
 where
@@ -33,6 +36,26 @@ stringProp :: Text -> Aeson.Value
 stringProp desc =
   Aeson.object
     [ "type" .= ("string" :: Text),
+      "description" .= desc
+    ]
+
+-- | Build an empty object schema (no properties).
+emptyObjectSchema :: Aeson.Value
+emptyObjectSchema = objectSchema [] []
+
+-- | A number property with a description.
+numberProp :: Text -> Aeson.Value
+numberProp desc =
+  Aeson.object
+    [ "type" .= ("number" :: Text),
+      "description" .= desc
+    ]
+
+-- | A boolean property with a description.
+boolProp :: Text -> Aeson.Value
+boolProp desc =
+  Aeson.object
+    [ "type" .= ("boolean" :: Text),
       "description" .= desc
     ]
 
