@@ -55,9 +55,7 @@ module Sentinel.Sentinel
 
     -- * Verbosity / Debug
     Verbosity (..),
-    getVerbosity,
     setVerbosity,
-    debugLog,
   )
 where
 
@@ -73,7 +71,6 @@ import Sentinel.Facts (AskableFactStore, BaseFactStore, HasFactStore (..), empty
 import Sentinel.Facts qualified as Facts
 import Sentinel.Solver.Types (Scalar (..), UserInputType (..))
 import Sentinel.Verbosity (Verbosity (..))
-import Prelude qualified
 
 --------------------------------------------------------------------------------
 -- User Questions
@@ -390,7 +387,11 @@ addPendingUserInput inputType inputName args questionText inputCandidates = do
             pendingQuestion = questionText,
             pendingCandidates = inputCandidates
           }
-  liftIO $ modifyIORef' pendingRef (info :)
+  -- Only add if not already pending (prevent duplicates)
+  liftIO $ modifyIORef' pendingRef $ \existing ->
+    if any (\p -> p.pendingType == inputType && p.pendingName == inputName && p.pendingArguments == args) existing
+      then existing
+      else info : existing
 
 -- | Get all pending user inputs.
 getPendingUserInputs :: SentinelM db [PendingUserInput]
@@ -432,21 +433,8 @@ getPendingAskables = do
 -- Verbosity / Debug Operations
 --------------------------------------------------------------------------------
 
--- | Get the current verbosity level.
-getVerbosity :: SentinelM db Verbosity
-getVerbosity = do
-  verbRef <- asks (.verbosity)
-  liftIO $ readIORef verbRef
-
 -- | Set the verbosity level.
 setVerbosity :: Verbosity -> SentinelM db ()
 setVerbosity level = do
   verbRef <- asks (.verbosity)
   liftIO $ writeIORef verbRef level
-
--- | Output debug message if current verbosity is at or above the specified level.
-debugLog :: Verbosity -> Text -> SentinelM db ()
-debugLog level msg = do
-  currentLevel <- getVerbosity
-  when (currentLevel >= level) $
-    liftIO $ Prelude.putStrLn $ "[DEBUG] " <> T.unpack msg
