@@ -6,9 +6,6 @@ module Sentinel.Facts
   ( -- * Fact Store Operations (Typeclass)
     HasFactStore (..),
 
-    -- * Evidence
-    Evidence (..),
-
     -- * Base Fact Store
     BaseFactStore (..),
     emptyBaseFactStore,
@@ -47,22 +44,6 @@ class (Monad m) => HasFactStore m where
   getFactStore :: m BaseFactStore
 
 --------------------------------------------------------------------------------
--- Evidence
---------------------------------------------------------------------------------
-
--- | Evidence level for how a fact was established.
--- Higher constructors represent stronger evidence.
-data Evidence
-  = -- | User claimed this fact (lowest trust)
-    UserClaim
-  | -- | Verified via documentation
-    DocumentVerified
-  | -- | Verified via database lookup (highest trust)
-    DatabaseVerified
-  deriving stock (Eq, Ord, Show, Generic)
-  deriving anyclass (ToJSON, FromJSON)
-
---------------------------------------------------------------------------------
 -- Base Fact Store
 --------------------------------------------------------------------------------
 
@@ -83,8 +64,8 @@ emptyBaseFactStore = BaseFactStore M.empty
 -- | Add a single base fact to the store.
 addBaseFact :: BaseFact -> BaseFactStore -> BaseFactStore
 addBaseFact fact (BaseFactStore m) =
-  BaseFactStore $
-    M.insertWith Set.union fact.predicateName (Set.singleton fact) m
+  BaseFactStore
+    $ M.insertWith Set.union fact.predicateName (Set.singleton fact) m
 
 -- | Add multiple base facts to the store.
 addBaseFacts :: [BaseFact] -> BaseFactStore -> BaseFactStore
