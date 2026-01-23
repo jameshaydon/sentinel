@@ -5,6 +5,7 @@
 module Sentinel.Pretty
   ( -- * Display typeclass
     Disp (..),
+    dispText,
 
     -- * Semantic annotations
     Ann (..),
@@ -116,6 +117,10 @@ putDispLn = putDocLn . disp
 -- | A class for things that have a canonical pretty-printed representation.
 class Disp a where
   disp :: a -> Doc Ann
+
+-- | Render a displayable value to plain text (no ANSI styling).
+dispText :: (Disp a) => a -> Text
+dispText = renderDocPlain . disp
 
 --------------------------------------------------------------------------------
 -- Style helpers

@@ -257,7 +257,7 @@ applySideSessionResult spec question userResponse = \case
       env <- ask
       -- Set the context value in Sentinel
       liftIO $ Sentinel.runSentinelM env.sentinelEnv (Sentinel.setContextValue name scalar [])
-      let resultText = "Set " <> name <> " = " <> showScalar scalar
+      let resultText = "Set " <> name <> " = " <> dispText scalar
       liftIO $ putDispLn (Output.SideSessionSuccess question userResponse resultText)
       pure $ formatSuccessSummary question userResponse resultText
     AskableSession {} -> do
@@ -289,12 +289,6 @@ applySideSessionResult spec question userResponse = \case
   SideSession.Ambiguous reason -> do
     liftIO $ putDispLn (Output.SideSessionAmbiguous question userResponse)
     pure $ formatAmbiguousSummary question userResponse reason
-  where
-    showScalar = \case
-      ScNum n -> T.pack (show n)
-      ScStr t -> t
-      ScBool b -> if b then "true" else "false"
-
 -- | Format a successful side session summary for the LLM.
 formatSuccessSummary :: Text -> Text -> Text -> Text
 formatSuccessSummary question userResponse resultText =
@@ -416,11 +410,7 @@ makeFinalInstructions ctxStore blockedCtx blockedAskables =
               ]
 
     formatArgs [] = ""
-    formatArgs args = "(" <> T.intercalate ", " (showScalar <$> args) <> ")"
-    showScalar = \case
-      ScNum n -> T.pack (show n)
-      ScStr t -> t
-      ScBool b -> if b then "true" else "false"
+    formatArgs args = "(" <> T.intercalate ", " (dispText <$> args) <> ")"
 
 --------------------------------------------------------------------------------
 -- Main Agent Loop
