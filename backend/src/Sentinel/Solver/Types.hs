@@ -75,6 +75,14 @@ scalarFromJSON = \case
   Aeson.String t -> Just (ScStr t)
   _ -> Nothing
 
+-- | Display instance for scalars.
+-- Uses "true"/"false" for bools and plain strings (no quotes).
+instance Disp Scalar where
+  disp = \case
+    ScBool b -> if b then "true" else "false"
+    ScNum n -> pretty (show n)
+    ScStr t -> pretty t
+
 -- | Display a scalar for pretty-printing (proof traces, diagnostics).
 -- Uses "true"/"false" for bools and quotes strings.
 dispScalar :: Scalar -> Doc Ann
