@@ -29,3 +29,20 @@ weeder: build
 [group('test')]
 test: build
   cd backend && cabal test -O0
+
+# Start WebSocket backend for the frontend
+[group('dev')]
+backend-ws example='passport' user='usr_test' port='9090': build
+  cd backend && cabal run repl -- --example {{example}} --user {{user}} --mode websocket --port {{port}}
+
+[group('dev')]
+frontend-dev:
+  cd sentinel-web && npm run dev
+
+[group('build')]
+frontend-build:
+  cd sentinel-web && npm run build
+
+[group('gen')]
+frontend-install:
+  cd sentinel-web && npm install

@@ -49,6 +49,7 @@ library
       Sentinel.Tool
       Sentinel.Toolkit
       Sentinel.Verbosity
+      Sentinel.WebSocket
   other-modules:
       Paths_sentinel
   hs-source-dirs:
@@ -75,6 +76,7 @@ library
   ghc-options: -fwrite-ide-info -hiedir .hie -haddock -fhide-source-paths -Werror -Weverything -Wcompat -Wno-missing-exported-signatures -Wno-missing-kind-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-monomorphism-restriction -Wno-missing-safe-haskell-mode -Wno-prepositive-qualified-module -Wno-unused-packages -Wno-missing-role-annotations -Wno-missing-poly-kind-signatures
   build-depends:
       aeson
+    , async
     , base
     , bytestring
     , comonad
@@ -100,10 +102,12 @@ library
     , repline
     , safe
     , servant-client
+    , stm
     , text
     , time
     , transformers
     , vector
+    , websockets
   default-language: GHC2024
 
 executable repl
@@ -134,6 +138,7 @@ executable repl
   ghc-options: -fwrite-ide-info -hiedir .hie -haddock -fhide-source-paths -Werror -Weverything -Wcompat -Wno-missing-exported-signatures -Wno-missing-kind-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-monomorphism-restriction -Wno-missing-safe-haskell-mode -Wno-prepositive-qualified-module -Wno-unused-packages -Wno-missing-role-annotations -Wno-missing-poly-kind-signatures -threaded -rtsopts -with-rtsopts=-N
   build-depends:
       aeson
+    , async
     , base
     , bytestring
     , comonad
@@ -160,10 +165,12 @@ executable repl
     , safe
     , sentinel
     , servant-client
+    , stm
     , text
     , time
     , transformers
     , vector
+    , websockets
   default-language: GHC2024
 
 test-suite all
@@ -195,6 +202,7 @@ test-suite all
   ghc-options: -fwrite-ide-info -hiedir .hie -haddock -fhide-source-paths -Werror -Weverything -Wcompat -Wno-missing-exported-signatures -Wno-missing-kind-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-monomorphism-restriction -Wno-missing-safe-haskell-mode -Wno-prepositive-qualified-module -Wno-unused-packages -Wno-missing-role-annotations -Wno-missing-poly-kind-signatures
   build-depends:
       aeson
+    , async
     , base
     , bytestring
     , comonad
@@ -221,10 +229,12 @@ test-suite all
     , safe
     , sentinel
     , servant-client
+    , stm
     , tasty
     , tasty-hunit
     , text
     , time
     , transformers
     , vector
+    , websockets
   default-language: GHC2024

@@ -14,6 +14,7 @@ import Sentinel.Agent (AgentConfig (..), defaultConfig)
 import Sentinel.Example (Example (..), runExample)
 import Sentinel.LLM qualified as LLM
 import Sentinel.Sentinel (SessionData (..), Verbosity (..), consoleEventSink, consoleUserInput)
+import Sentinel.WebSocket qualified as WebSocket
 import System.Environment (lookupEnv)
 import Prelude
 
@@ -59,7 +60,9 @@ missingKeyDoc =
 data Options w = Options
   { example :: w ::: T.Text <?> "Example to run (airlogic, aircanada, passport)",
     user :: w ::: T.Text <?> "User ID for the session",
-    verbosity :: w ::: Maybe Verbosity <?> "Verbosity level (silent, basic, detailed, verbose)"
+    verbosity :: w ::: Maybe Verbosity <?> "Verbosity level (silent, basic, detailed, verbose)",
+    mode :: w ::: Maybe T.Text <?> "Mode: console (default) or websocket",
+    port :: w ::: Maybe Int <?> "WebSocket port (default 8080, only used in websocket mode)"
   }
   deriving stock (Generic)
 
@@ -68,28 +71,34 @@ instance ParseRecord (Options Wrapped)
 deriving stock instance Show (Options Unwrapped)
 
 -- | Run with a specific example and user ID.
-runWithExample :: Example db -> T.Text -> Verbosity -> IO ()
-runWithExample ex userId verbosityLevel = do
+runWithExample :: Example db -> T.Text -> Verbosity -> T.Text -> Int -> IO ()
+runWithExample ex userId verbosityLevel runMode wsPort = do
   putDocLn (bannerDoc ex)
   maybeKey <- lookupEnv "OPENAI_API_KEY"
   case maybeKey of
     Nothing -> putDocLn missingKeyDoc
     Just apiKey -> do
       config <- defaultConfig (T.pack apiKey)
-      let modelName = T.pack (show (config.llmConfig.model :: LLM.Model))
-          sessionData = SessionData {userId = Just userId}
-      putDocLn (readyDoc modelName ex)
-      runExample config ex sessionData verbosityLevel consoleEventSink consoleUserInput
+      let sessionData = SessionData {userId = Just userId}
+      case runMode of
+        "websocket" ->
+          WebSocket.runWsServer wsPort config ex sessionData verbosityLevel
+        _ -> do
+          let modelName = T.pack (show (config.llmConfig.model :: LLM.Model))
+          putDocLn (readyDoc modelName ex)
+          runExample config ex sessionData verbosityLevel consoleEventSink consoleUserInput
 
 -- | Main entry point.
 main :: IO ()
 main = do
   opts :: Options Unwrapped <- unwrapRecord "Sentinel - Governance middleware for LLM agents"
   let verbosityLevel = maybe Silent id opts.verbosity
+      runMode = maybe "console" id opts.mode
+      wsPort = maybe 8080 id opts.port
   case opts.example of
-    "airlogic" -> runWithExample airLogicExample opts.user verbosityLevel
-    "aircanada" -> runWithExample airCanadaExample opts.user verbosityLevel
-    "passport" -> runWithExample passportExample opts.user verbosityLevel
+    "airlogic" -> runWithExample airLogicExample opts.user verbosityLevel runMode wsPort
+    "aircanada" -> runWithExample airCanadaExample opts.user verbosityLevel runMode wsPort
+    "passport" -> runWithExample passportExample opts.user verbosityLevel runMode wsPort
     other -> do
       putDocLn $ "Unknown example: " <> pretty other
       putDocLn ""

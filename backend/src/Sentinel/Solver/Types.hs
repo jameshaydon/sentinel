@@ -13,6 +13,7 @@ module Sentinel.Solver.Types
 
     -- * Base Facts
     BaseFact (..),
+    factOutput,
 
     -- * Proof Traces
     Proof (..),
@@ -158,6 +159,17 @@ data BaseFact = BaseFact
   }
   deriving stock (Show, Eq, Ord, Generic)
   deriving anyclass (ToJSON, FromJSON)
+
+-- | Extract the single output argument from a binary fact (1 input, 1 output).
+factOutput :: BaseFact -> Scalar
+factOutput fact = case fact.arguments of
+  [_, output] -> output
+  _ ->
+    error $
+      "factOutput: expected 2 arguments in "
+        <> T.unpack fact.predicateName
+        <> " fact, got "
+        <> show (length fact.arguments)
 
 instance Disp BaseFact where
   disp fact =
