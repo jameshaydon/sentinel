@@ -137,7 +137,7 @@ retrieveBookingTool =
                 { observation = renderDocPlain (disp booking),
                   producedFacts = bookingToFacts booking,
                   triggerSideSession = Nothing,
-                  blockedOn = []
+                  solverOutcome = Nothing
                 }
           Nothing -> throwError $ "No booking found with reference: " <> ref
     }
@@ -164,7 +164,7 @@ checkFlightTool =
                 { observation = renderDocPlain (disp flight),
                   producedFacts = flightToFacts flight,
                   triggerSideSession = Nothing,
-                  blockedOn = []
+                  solverOutcome = Nothing
                 }
           Nothing -> throwError $ "No flight found with number: " <> flightNum
     }
@@ -198,7 +198,7 @@ searchBookingsTool =
                         ],
                   producedFacts = concatMap bookingToFacts bookings,
                   triggerSideSession = Nothing,
-                  blockedOn = []
+                  solverOutcome = Nothing
                 }
     }
 
@@ -238,7 +238,7 @@ processRefundTool =
             { observation = result,
               producedFacts = [], -- Action tools produce no facts
               triggerSideSession = Nothing,
-              blockedOn = []
+              solverOutcome = Nothing
             }
     }
 
@@ -275,7 +275,7 @@ queryEligibilityTool =
                   <> "The Agent should run the eligibleForRefund rule via the solver.",
               producedFacts = [],
               triggerSideSession = Nothing,
-              blockedOn = []
+              solverOutcome = Nothing
             }
     }
 
@@ -313,7 +313,7 @@ establishContextTool =
             { observation = "Context established: " <> slot <> " = " <> value,
               producedFacts = [],
               triggerSideSession = Nothing,
-              blockedOn = []
+              solverOutcome = Nothing
             }
     }
 

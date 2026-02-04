@@ -23,6 +23,10 @@ library
       Examples.AirLogic.ToolBindings
       Examples.AirLogic.Tools
       Examples.AirLogic.Types
+      Examples.Passport.Example
+      Examples.Passport.Rules
+      Examples.Passport.Tools
+      Examples.Passport.Types
       Pre
       Sentinel.Agent
       Sentinel.App

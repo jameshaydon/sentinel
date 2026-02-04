@@ -23,7 +23,7 @@
 - `legal_duty_refund`
 - applicable over-aged fee is paid (TODO)
 
-## Bereavement Rule
+## Refund in case of death
 
 `immediate_family_member(p)` if:
   ... (exhaustive list)
@@ -54,6 +54,7 @@
 - `schedule_irregularity`
 - You refuse the alternate travel arrangements offered by Air Canada because they "do not accommodate [your] travel needs" and choose to "no longer travel"
 - You communicate this to Air Canada _before_ the start of the _alternative_ travel.
+- The refund request is made within one year of the non-travel date.
 
 `full_refund` if:
 - `involuntary_refund`
@@ -68,3 +69,6 @@
 - `involuntary_refund`
 - at a connection point (partially flown)
 - continue travel by other means (*not* arranged by Air Canada)
+
+## Voluntary Cancellation
+

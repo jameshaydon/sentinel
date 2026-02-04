@@ -16,7 +16,6 @@ module Sentinel.Tool
 
     -- * Tool Output
     ToolOutput (..),
-    BlockedItem (..),
 
     -- * Side Session Specification
     SideSessionSpec (..),
@@ -42,7 +41,7 @@ import Sentinel.Context (ContextDecl)
 import Sentinel.Sentinel (SentinelM)
 import Sentinel.Solver.Askable (AskableDecl)
 import Sentinel.Solver.Combinators (SolverM)
-import Sentinel.Solver.Types (BaseFact, Proof, Scalar)
+import Sentinel.Solver.Types (BaseFact, Proof, Scalar, SolverOutcome)
 
 --------------------------------------------------------------------------------
 -- Tool Categories
@@ -76,15 +75,6 @@ data SideSessionSpec
 -- Tool Output
 --------------------------------------------------------------------------------
 
--- | Information about a blocked item (context variable or askable).
--- Used to track what Ask tools should be made available.
-data BlockedItem
-  = -- | Blocked on a context variable
-    BlockedContext Text
-  | -- | Blocked on an askable predicate (name, arguments)
-    BlockedAskable Text [Scalar]
-  deriving stock (Show, Eq, Generic)
-
 -- | Output from tool execution.
 --
 -- Combines the observation text (returned to the LLM) with any facts
@@ -95,8 +85,8 @@ data ToolOutput = ToolOutput
     producedFacts :: [BaseFact],
     -- | If set, triggers a synchronous side conversation session
     triggerSideSession :: Maybe SideSessionSpec,
-    -- | Items that are blocked and need user input (makes Ask tools available)
-    blockedOn :: [BlockedItem]
+    -- | Solver outcome from the tool (if the tool ran the solver internally)
+    solverOutcome :: Maybe SolverOutcome
   }
   deriving stock (Show, Generic)
 

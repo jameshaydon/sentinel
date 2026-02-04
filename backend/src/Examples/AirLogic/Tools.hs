@@ -135,7 +135,7 @@ getUserBookingsTool =
                         ],
                   producedFacts = concatMap bookingToFacts' bookings,
                   triggerSideSession = Nothing,
-                  blockedOn = []
+                  solverOutcome = Nothing
                 }
     }
   where
@@ -164,7 +164,7 @@ getBookingTool =
                 { observation = renderDocPlain (disp booking),
                   producedFacts = bookingToFacts booking,
                   triggerSideSession = Nothing,
-                  blockedOn = []
+                  solverOutcome = Nothing
                 }
           Nothing -> throwError $ "No booking found with ID: " <> bookingId
     }
@@ -191,7 +191,7 @@ getFlightDetailsTool =
                 { observation = renderDocPlain (disp flight),
                   producedFacts = flightToFacts flight,
                   triggerSideSession = Nothing,
-                  blockedOn = []
+                  solverOutcome = Nothing
                 }
           Nothing -> throwError $ "No flight found with ID: " <> flightId
     }
@@ -218,7 +218,7 @@ getAirportInfoTool =
                 { observation = renderDocPlain (disp airport),
                   producedFacts = airportToFacts airport,
                   triggerSideSession = Nothing,
-                  blockedOn = []
+                  solverOutcome = Nothing
                 }
           Nothing -> throwError $ "No airport found with code: " <> code
     }
@@ -245,7 +245,7 @@ getUserProfileTool =
                 { observation = renderDocPlain (disp user),
                   producedFacts = userToFacts user,
                   triggerSideSession = Nothing,
-                  blockedOn = []
+                  solverOutcome = Nothing
                 }
           Nothing -> throwError $ "No user found with ID: " <> userId
     }
@@ -273,7 +273,7 @@ getRebookingPolicyTool =
                 { observation = renderDocPlain (disp policy),
                   producedFacts = rebookingPolicyToFacts policy,
                   triggerSideSession = Nothing,
-                  blockedOn = []
+                  solverOutcome = Nothing
                 }
           Nothing -> throwError $ "No rebooking policy found for fare class: " <> fareClassStr
     }
@@ -318,7 +318,7 @@ issueFullRefundTool =
                       <> ". Amount will be credited to the original payment method within 3-5 business days.",
                   producedFacts = [BaseFact "refund_issued" [ScStr bookingId, ScStr "full", ScNum (fromIntegral booking.totalAmountCents)]],
                   triggerSideSession = Nothing,
-                  blockedOn = []
+                  solverOutcome = Nothing
                 }
     }
 
@@ -359,7 +359,7 @@ issuePartialRefundTool =
                       <> "Amount will be credited to the original payment method within 3-5 business days.",
                   producedFacts = [BaseFact "refund_issued" [ScStr bookingId, ScStr "partial", ScNum (fromIntegral refundAmount)]],
                   triggerSideSession = Nothing,
-                  blockedOn = []
+                  solverOutcome = Nothing
                 }
     }
 
@@ -400,7 +400,7 @@ issueVoucherTool =
                       <> "-2025",
                   producedFacts = [BaseFact "voucher_issued" [ScStr bookingId, ScNum (fromIntegral booking.totalAmountCents)]],
                   triggerSideSession = Nothing,
-                  blockedOn = []
+                  solverOutcome = Nothing
                 }
     }
 

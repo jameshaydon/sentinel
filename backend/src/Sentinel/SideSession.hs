@@ -67,6 +67,7 @@ contextSessionTools = \case
   IntType -> [userAnsweredNumberTool, ambiguousTool]
   FloatType -> [userAnsweredNumberTool, ambiguousTool]
   BoolType -> [userAnsweredBoolTool, ambiguousTool]
+  ExprType -> [userAnsweredStringTool, ambiguousTool]
 
 -- | Tool for when user provides a string value.
 userAnsweredStringTool :: OpenAI.Tool
@@ -245,6 +246,7 @@ formatContextSidePrompt valueType question userResponse =
       IntType -> ("numeric", "UserAnsweredWithNumber")
       FloatType -> ("numeric", "UserAnsweredWithNumber")
       BoolType -> ("boolean (yes/no)", "UserAnsweredWithBoolean")
+      ExprType -> ("expression", "UserAnsweredWithString")
 
 -- | Format the side session prompt for askable predicates.
 formatAskableSidePrompt :: AskableDecl -> Text -> Text -> Text

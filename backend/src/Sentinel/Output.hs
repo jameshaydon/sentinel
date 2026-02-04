@@ -15,7 +15,6 @@ module Sentinel.Output
     ResolutionAttempt (..),
     QueryExecution (..),
     NeedsUserInput (..),
-    EligibilityCheckResult (..),
     DirectQuestion (..),
 
     -- * Askable UX Types
@@ -29,6 +28,9 @@ module Sentinel.Output
 
     -- * Session Info
     SessionInfo (..),
+
+    -- * Limits
+    IterationLimitReached (..),
   )
 where
 
@@ -175,31 +177,6 @@ instance Disp NeedsUserInput where
     let hdr = label "? Guard for" <+> styledToolName (pretty tool) <+> label "needs user input:"
      in section 4 hdr (wrappedText q)
 
--- | Result of an eligibility check (from CheckEligibility tool)
-data EligibilityCheckResult
-  = EligibilityVerified Text (NonEmpty SolverSuccess)
-  | EligibilityDenied Text Text
-  | EligibilityNeedsInfo Text Text -- ^ (guard name, question text)
-  deriving stock (Show, Eq, Generic)
-
-instance Disp EligibilityCheckResult where
-  disp = \case
-    EligibilityVerified claim proofs ->
-      let (firstProof :| _) = proofs
-          hdr = successText "✓" <+> label "Verified:" <+> pretty claim
-       in section 4 hdr (indent 2 (disp firstProof))
-    EligibilityDenied claim reason ->
-      let hdr = errorText "✗" <+> label "Not verified:" <+> pretty claim
-       in section 4 hdr (indent 2 (wrappedText reason))
-    EligibilityNeedsInfo guardName question ->
-      let hdr = label "⏸" <+> label "Blocked:" <+> pretty guardName <+> label "needs info"
-       in section 4 hdr $
-            vsep
-              [ dimText "(Call the appropriate Ask tool to prompt the user)",
-                "",
-                label "Question:" <+> wrappedText question
-              ]
-
 -- | Direct question to user (bypasses LLM, displayed immediately)
 data DirectQuestion = DirectQuestion {directQuestionText :: Text}
   deriving stock (Show, Eq, Generic)
@@ -288,7 +265,7 @@ data AskingUser = AskingUser {askingUserQuestion :: Text}
 
 instance Disp AskingUser where
   disp (AskingUser q) =
-    section 4 (label "❓ Question for you:") (wrappedText q)
+    section 0 (label "❓ Question for you:") (wrappedText q)
 
 -- | Result of a side session (displayed after user responds).
 data SideSessionResult
@@ -336,3 +313,19 @@ instance Disp SessionInfo where
             [ indent 2 $ label "•" <+> pretty slot <+> "=" <+> successText (pretty val)
             | (slot, val) <- ctx
             ]
+
+--------------------------------------------------------------------------------
+-- Limits
+--------------------------------------------------------------------------------
+
+-- | Agent hit its maximum iteration count.
+data IterationLimitReached = IterationLimitReached {limit :: Int}
+  deriving stock (Show, Eq, Generic)
+
+instance Disp IterationLimitReached where
+  disp (IterationLimitReached n) =
+    section 0 (errorText "⚠ Iteration limit reached") $
+      vsep
+        [ errorText ("The agent used all " <> pretty n <> " iterations without producing a final answer."),
+          dimText "You can ask the agent to continue."
+        ]

@@ -17,6 +17,7 @@ nix flake check # run all nix flake checks
 ```bash
 cabal run repl -- --example airlogic --user usr_sarah_chen
 cabal run repl -- --example aircanada --user usr_james_doe
+cabal run repl -- --example passport --user usr_test
 cabal run repl -- --help  # Show CLI options
 ```
 
@@ -64,12 +65,21 @@ cabal run repl -- --help  # Show CLI options
 - **Fact Store**: Working memory of ground predicates established during the session
 - **Proof Trace**: Audit trail showing how conclusions were derived
 
-### SolverResult Outcomes
+### SolverOutcome
 
-- **Success**: Guard proved, tool can execute
-- **BlockedOnContext**: Need to establish a context variable first
-- **BlockedOnAskable**: Need user confirmation
-- **Failure**: All proof paths exhausted, action denied
+`SolverOutcome` captures the full picture from a solver run:
+- **successes**: All proofs found (may be multiple)
+- **blocked**: All user input blocks (deduplicated)
+- **failures**: All failed proof paths
+
+`runSolverFull` (in `Solver.hs`) returns `SolverOutcome`. The framework automatically:
+- Registers blocked items with Sentinel for dynamic Ask_ tool generation
+- Displays solver outcomes on the console via `Disp SolverOutcome`
+- Formats solver outcomes as text for the LLM via `formatSolverOutcomeForLLM`
+
+`ToolOutput.solverOutcome :: Maybe SolverOutcome` lets tools that run the solver internally (like `CheckEligibility`) return their outcome for framework processing.
+
+`SentinelResult.AskUser` carries a `Text` field with the formatted solver outcome for the LLM.
 
 ## Project Structure
 ```
@@ -88,7 +98,7 @@ backend/
 │   │   ├── Agent.hs                     # ReAct agent loop
 │   │   ├── Solver.hs                    # Solver entry point (re-exports)
 │   │   └── Solver/
-│   │       ├── Types.hs                 # Scalar, BaseFact, Proof, SolverResult
+│   │       ├── Types.hs                 # Scalar, BaseFact, Proof, SolverResult, SolverOutcome
 │   │       ├── Combinators.hs           # SolverM monad (LogicT-based)
 │   │       ├── ToolBindings.hs          # Predicate-to-tool mappings
 │   │       └── Askable.hs               # User-confirmable predicates
@@ -110,8 +120,13 @@ backend/
 │       │   ├── ToolBindings.hs          # Predicate-to-tool mappings
 │       │   ├── Tools.hs                 # Full toolkit with guards
 │       │   └── Types.hs                 # Domain types
-│       └── AirLogic/
-│           └── ...
+│       ├── AirLogic/
+│       │   └── ...
+│       └── Passport/
+│           ├── Example.hs               # Configuration & entry point
+│           ├── Rules.hs                 # Citizenship proof rules (SolverM)
+│           ├── Tools.hs                 # Toolkit, askables, system prompt
+│           └── Types.hs                 # PersonId (Scalar), PassportDB
 ├── test/Main.hs
 └── package.yaml                         # Hpack config (source of truth)
 
@@ -137,7 +152,8 @@ examples/
 - **Stateless solver**: Complete result per invocation, no continuation between turns
 - **Tool categories**: DataTools auto-invoked by solver; ActionTools need explicit LLM invocation
 - **Function-based guards**: `Value -> SolverM Proof` unifies guards with rule system
-- **Generic deriving**: JSON via `DeriveAnyClass` and `aeson`
+- **Generic deriving**: JSON via `DeriveAnyClass` and `aeson` (except `Scalar` which has manual instances)
+- **Compound terms**: `Scalar` supports `ScExpr Text [Scalar]` for structured values like `mother(applicant)`. Nullary `ScExpr "x" []` = atom, compound `ScExpr "f" [args]` = function application. `ScalarType` has a corresponding `ExprType`.
 
 ## Solver Combinators (Sentinel.Solver.Combinators)
 ```haskell
@@ -148,6 +164,8 @@ require :: Bool -> Text -> SolverM Proof                -- Boolean condition
 withRule :: Text -> SolverM a -> SolverM a              -- Name a proof step
 contextVar :: Text -> SolverM Scalar                    -- Get context or block
 askable :: Text -> [Scalar] -> SolverM Proof            -- User confirm or block
+orElse :: SolverM a -> SolverM a -> SolverM a           -- Committed-choice fallback (ifte)
+ifThenElse :: SolverM Proof -> SolverM Proof -> SolverM Proof -> SolverM Proof  -- Conditional
 failWith :: Text -> SolverM a                           -- Fail with diagnostic
 ```
 
@@ -155,6 +173,21 @@ failWith :: Text -> SolverM a                           -- Fail with diagnostic
 
 - **`??:`** (infixr 0): Lift `Maybe` into `MonadError`. `lookupUser userId ??: UserNotFound userId`
 - **`??%`** (infixr 0): Lift `Either` into `MonadError`. `parseInput raw ??% \e -> InvalidInput e`
+
+## Passport Example — Iterative Proof Pattern
+
+The passport example uses a different pattern from AirCanada/AirLogic:
+- `CheckEligibility` is a **DataTool with NoGuard** (not an ActionTool with SolverGuardT)
+- It runs `runSolverFull` in its `execute` function and returns the `SolverOutcome` in `ToolOutput.solverOutcome`
+- The framework handles: block registration with Sentinel, console display via `Disp SolverOutcome`, and LLM text via `formatSolverOutcomeForLLM`
+- Uses `oneOf` (not `orElse`) in `brit` and `viaParent` to explore all branches (both parents, both birth/naturalisation)
+- No `withVerification` needed — the tool manages solver interaction directly
+
+This enables iterative deepening: each call discovers proofs at the current knowledge level and reports what questions would unlock more paths.
+
+The `applicant` is a **context variable** (not a constant). When the solver runs `contextVar "applicant"`, it either resolves to the set value (e.g., `ScStr "Romi Haydon"`) or blocks, causing the framework to create an `Ask_applicant` tool. Person identifiers use `ScExpr` compound terms (e.g., `ScExpr "mother" [ScStr "Romi Haydon"]`), which render natively as `mother(Romi Haydon)` via `scalarToText`. Helper functions `motherOf` and `fatherOf` are in `Types.hs`.
+
+Pre-check askables use `possibly_british` / `possibly_brit_otbd` naming to clarify they are pruning checks, not standalone proofs.
 
 ## Current State
 

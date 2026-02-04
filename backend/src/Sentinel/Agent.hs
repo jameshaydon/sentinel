@@ -13,6 +13,7 @@ where
 import Control.Monad.State.Strict
 import Data.Aeson qualified as Aeson
 import Data.IORef (readIORef)
+import System.IO (hFlush, stdout)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as T.Encoding
 import Data.Vector qualified as V
@@ -189,21 +190,10 @@ handleRegularTool callId toolName argsJson = do
           pure $ ToolMsg callId obs
         Denied reason -> do
           pure $ ToolMsg callId ("ERROR: " <> reason)
-        AskUser question -> do
+        AskUser _question blockText -> do
           -- Sentinel already registered the pending user input
-          -- Return block information for the LLM
-          let blockInfo = formatBlockForLLM question
-          pure $ ToolMsg callId blockInfo
-
--- | Format blocked user question for the LLM to understand what to do.
-formatBlockForLLM :: Sentinel.UserQuestion -> Text
-formatBlockForLLM question =
-  T.unlines
-    [ "BLOCKED: Guard cannot proceed without additional information.",
-      "",
-      "Type: " <> Sentinel.describeUserInput question,
-      "Question: " <> question.questionText
-    ]
+          -- Return the formatted solver outcome text for the LLM
+          pure $ ToolMsg callId blockText
 
 --------------------------------------------------------------------------------
 -- Side Session
@@ -233,6 +223,7 @@ runSideSession spec = do
   liftIO $ putDispLn (Output.AskingUser question)
 
   -- 2. Get user response via blocking stdin read
+  liftIO $ putStr "> " >> hFlush stdout
   userResponse <- T.pack <$> liftIO getLine
 
   -- 3. Call LLM with the side session prompt and tools
@@ -296,7 +287,9 @@ formatSuccessSummary question userResponse resultText =
     [ "Side Session Complete:",
       "  Question: " <> question,
       "  User said: " <> userResponse,
-      "  Result: " <> resultText
+      "  Result: " <> resultText,
+      "",
+      "New information has been established. You MUST re-run the relevant tool (e.g. CheckEligibility) to get updated results before giving a final answer."
     ]
 
 -- | Format an ambiguous side session summary for the LLM.
@@ -368,8 +361,12 @@ runAgent config toolkit baseSystemPrompt sentinel sentinelEnv history turnCount 
 -- | Generate final instructions including current context and pending questions.
 -- These are appended at the end of the messages, making them the last thing
 -- the LLM sees before generating a response.
-makeFinalInstructions :: ContextStore -> [Text] -> [(Text, [Scalar])] -> Maybe Text
-makeFinalInstructions ctxStore blockedCtx blockedAskables =
+--
+-- When proofs have been found alongside blocked questions, the instructions
+-- tell the LLM to present proofs first and let the user decide whether to
+-- continue exploring, rather than unconditionally asking all blocked questions.
+makeFinalInstructions :: Bool -> ContextStore -> [Text] -> [(Text, [Scalar])] -> Maybe Text
+makeFinalInstructions proofsFound ctxStore blockedCtx blockedAskables =
   let contextText = Sentinel.formatContextForLLM ctxStore
       hasContext = contextText /= "No context established."
       hasPending = not (null blockedCtx && null blockedAskables)
@@ -386,28 +383,44 @@ makeFinalInstructions ctxStore blockedCtx blockedAskables =
     pendingSection =
       if null blockedCtx && null blockedAskables
         then Nothing
-        else
-          Just
-            $ T.unlines
-              [ "IMPORTANT: The following items are blocking progress:",
-                "",
-                if null blockedCtx
-                  then ""
-                  else
-                    "Blocked context variables:\n"
-                      <> T.unlines ["  - " <> ctx | ctx <- blockedCtx],
-                if null blockedAskables
-                  then ""
-                  else
-                    "Blocked askables:\n"
-                      <> T.unlines ["  - " <> predName <> formatArgs args | (predName, args) <- blockedAskables],
-                "Unless you are sure these questions are irrelevant to the user's request, "
-                  <> "call the relevant Ask_ tool to gather the needed information:",
-                T.unlines
-                  $ ["  - Ask_" <> ctx | ctx <- blockedCtx]
-                  ++ ["  - Ask_" <> predName | (predName, _) <- blockedAskables],
-                "Note that this tool must be invoked for Sentinel to register this. Even if it seems obvious from the previous conversation messages, it must be confirmed with the user through an Ask_ tool call."
-              ]
+        else Just $ if proofsFound then proofsFoundPending else noProofsPending
+
+    -- When proofs exist: present them, offer to continue
+    proofsFoundPending =
+      T.unlines
+        [ "PROOFS HAVE BEEN FOUND. Present them to the user BEFORE doing anything else.",
+          "There are also additional paths that could be explored if the user wants.",
+          "Ask the user whether they would like to explore alternative eligibility paths.",
+          "Do NOT call Ask_ tools unless the user explicitly asks to continue exploring.",
+          "",
+          "Available for further exploration (if the user requests it):",
+          T.unlines
+            $ ["  - Ask_" <> ctx | ctx <- blockedCtx]
+            ++ ["  - Ask_" <> predName | (predName, _) <- blockedAskables]
+        ]
+
+    -- When no proofs yet: actively gather information
+    noProofsPending =
+      T.unlines
+        [ "IMPORTANT: The following items are blocking progress:",
+          "",
+          if null blockedCtx
+            then ""
+            else
+              "Blocked context variables:\n"
+                <> T.unlines ["  - " <> ctx | ctx <- blockedCtx],
+          if null blockedAskables
+            then ""
+            else
+              "Blocked askables:\n"
+                <> T.unlines ["  - " <> predName <> formatArgs args | (predName, args) <- blockedAskables],
+          "Unless you are sure these questions are irrelevant to the user's request, "
+            <> "call the relevant Ask_ tool to gather the needed information:",
+          T.unlines
+            $ ["  - Ask_" <> ctx | ctx <- blockedCtx]
+            ++ ["  - Ask_" <> predName | (predName, _) <- blockedAskables],
+          "Note that this tool must be invoked for Sentinel to register this. Even if it seems obvious from the previous conversation messages, it must be confirmed with the user through an Ask_ tool call."
+        ]
 
     formatArgs [] = ""
     formatArgs args = "(" <> T.intercalate ", " (dispText <$> args) <> ")"
@@ -422,6 +435,7 @@ agentLoop = do
   iteration <- use #iterationCount
   if iteration > env.config.maxIterations
     then do
+      liftIO $ putDispLn (Output.IterationLimitReached env.config.maxIterations)
       let response = "I apologize, but I was unable to complete your request. Please try again or contact support."
       #messages %= (AssistantMsg (Just response) Nothing :)
       pure response
@@ -433,6 +447,7 @@ agentLoop = do
       blockedCtx <- liftIO $ Sentinel.runSentinelM env.sentinelEnv Sentinel.getPendingContextVars
       blockedAsk <- liftIO $ Sentinel.runSentinelM env.sentinelEnv Sentinel.getPendingAskables
       ctxStore <- liftIO $ Sentinel.runSentinelM env.sentinelEnv Sentinel.getContextStore
+      proofsFound <- liftIO $ Sentinel.runSentinelM env.sentinelEnv Sentinel.getProofsFound
 
       -- Generate dynamic Ask tools based on pending inputs
       let dynamicTools = Toolkit.makeDynamicAskTools env.toolkit blockedCtx blockedAsk
@@ -441,7 +456,7 @@ agentLoop = do
 
       -- Generate final instructions with current context and pending questions
       -- These are appended at the end of messages, making them the last thing the LLM sees
-      let finalInstructions = makeFinalInstructions ctxStore blockedCtx blockedAsk
+      let finalInstructions = makeFinalInstructions proofsFound ctxStore blockedCtx blockedAsk
 
       -- Log available tools before LLM call (if debug enabled)
       verbosityLevel <- liftIO $ readIORef env.sentinelEnv.verbosity
@@ -476,6 +491,11 @@ handleResponse msg = case msg of
         let response = fromMaybe "" assistant_content
         liftIO $ putDispLn (Output.FinalAnswer response)
         #messages %= (AssistantMsg (Just response) Nothing :)
+        -- Reset proofsFound: the LLM has presented results to the user.
+        -- If the user asks to continue exploring, the next turn should use
+        -- the directive "go ask these questions" instructions.
+        env <- ask
+        liftIO $ Sentinel.runSentinelM env.sentinelEnv (Sentinel.setProofsFound False)
         pure response
   _ -> do
     let response = "Unexpected response format from LLM"
