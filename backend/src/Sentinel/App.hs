@@ -7,6 +7,7 @@ where
 import Data.Text qualified as T
 import Examples.AirCanada.Example (airCanadaExample)
 import Examples.AirLogic.Example (airLogicExample)
+import Examples.Passport.Example (passportExample)
 import Options.Generic (ParseRecord, Unwrapped, Wrapped, unwrapRecord, type (:::), type (<?>))
 import Pre (Ann, Doc, Generic, indent, pretty, putDocLn, vsep, wrappedText)
 import Sentinel.Agent (AgentConfig (..), defaultConfig)
@@ -56,7 +57,7 @@ missingKeyDoc =
 
 -- | CLI options for the sentinel executable.
 data Options w = Options
-  { example :: w ::: T.Text <?> "Example to run (airlogic, aircanada)",
+  { example :: w ::: T.Text <?> "Example to run (airlogic, aircanada, passport)",
     user :: w ::: T.Text <?> "User ID for the session",
     verbosity :: w ::: Maybe Verbosity <?> "Verbosity level (silent, basic, detailed, verbose)"
   }
@@ -88,7 +89,8 @@ main = do
   case opts.example of
     "airlogic" -> runWithExample airLogicExample opts.user verbosityLevel
     "aircanada" -> runWithExample airCanadaExample opts.user verbosityLevel
+    "passport" -> runWithExample passportExample opts.user verbosityLevel
     other -> do
       putDocLn $ "Unknown example: " <> pretty other
       putDocLn ""
-      putDocLn "Available examples: airlogic, aircanada"
+      putDocLn "Available examples: airlogic, aircanada, passport"

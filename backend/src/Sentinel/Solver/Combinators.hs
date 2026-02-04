@@ -35,6 +35,10 @@ module Sentinel.Solver.Combinators
     getCurrentProof,
     appendProof,
 
+    -- * Committed Choice
+    orElse,
+    ifThenElse,
+
     -- * Failure
     failWith,
 
@@ -46,7 +50,7 @@ module Sentinel.Solver.Combinators
   )
 where
 
-import Control.Monad.Logic (LogicT, observeAllT)
+import Control.Monad.Logic (LogicT, ifte, observeAllT)
 import Control.Monad.State.Strict (StateT, gets, modify', runStateT)
 import Data.Aeson (Value)
 import Pre
@@ -372,6 +376,31 @@ getCurrentProof = do
 appendProof :: Proof -> SolverM ()
 appendProof proof = modify' $ \s ->
   s {proofStack = s.proofStack ++ [proof]}
+
+--------------------------------------------------------------------------------
+-- Committed Choice
+--------------------------------------------------------------------------------
+
+-- | Only try the second branch if the first completely fails.
+--
+-- Uses LogicT's 'ifte' for committed choice: if the first branch produces
+-- any result, commit to it (don't backtrack into the second branch).
+-- This prevents asking unnecessary questions when an earlier rule suffices.
+orElse :: SolverM a -> SolverM a -> SolverM a
+orElse a = ifte a pure
+
+-- | Mutually exclusive conditional.
+--
+-- If the condition succeeds, combine its proof with the then-branch;
+-- otherwise use the else-branch. The condition's proof is paired with
+-- the then-branch proof via 'RuleApplied'.
+ifThenElse :: SolverM Proof -> SolverM Proof -> SolverM Proof -> SolverM Proof
+ifThenElse cond thenBranch elseBranch =
+  ifte cond (\condProof -> do
+    thenProof <- thenBranch
+    rule <- gets (.currentRule)
+    pure $ RuleApplied (fromMaybe "if_then_else" rule) [condProof, thenProof]
+  ) elseBranch
 
 --------------------------------------------------------------------------------
 -- Failure

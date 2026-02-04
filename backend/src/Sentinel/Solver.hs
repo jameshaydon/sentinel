@@ -76,11 +76,10 @@ module Sentinel.Solver
     emptyAskableFactStore,
 
     -- * Running the Solver
-    runSolver,
+    runSolverFull,
   )
 where
 
-import Data.List.NonEmpty qualified as NE
 import Pre
 import Sentinel.Facts (AskableFactStore, BaseFactStore, emptyAskableFactStore, emptyBaseFactStore)
 import Sentinel.Solver.Askable
@@ -88,39 +87,28 @@ import Sentinel.Solver.Combinators
 import Sentinel.Solver.ToolBindings
 import Sentinel.Solver.Types
 
--- | Run a solver query and return a SolverResult.
+-- | Run a solver query and return a full 'SolverOutcome'.
 --
--- This is the main entry point for the solver. It:
--- 1. Runs the solver monad collecting all successful proofs
--- 2. If no successes, checks for pending blocks
--- 3. Returns Success, BlockedOnUserInput, or Failure
-runSolver ::
+-- Unlike 'runSolver' which collapses to a single 'SolverResult' case,
+-- this captures all successes, all blocks, and all failures at once.
+-- This is the preferred entry point when you need the complete picture
+-- (e.g. for formatting solver results for the LLM).
+runSolverFull ::
+  Text ->
   SolverEnv ->
   SolverState ->
   SolverM SolverSuccess ->
-  IO (SolverResult, SolverState)
-runSolver env initState solver = do
+  IO (SolverOutcome, SolverState)
+runSolverFull goalName env initState solver = do
   (successes, finalState) <- runSolverM env initState solver
-  case NE.nonEmpty successes of
-    Just ne ->
-      -- At least one proof succeeded
-      pure (Success ne, finalState)
-    Nothing ->
-      -- No successes - check for pending user input blocks
-      case finalState.pendingUserInputs of
-        (block : _) ->
-          pure (BlockedOnUserInput block, finalState)
-        [] ->
-          -- No pending blocks - all paths truly failed
-          -- Use the recorded failure paths for detailed diagnostics
-          let failures = case getFailedPaths finalState of
-                [] ->
-                  -- Shouldn't happen, but fallback to generic message
-                  [ FailurePath
-                      { ruleName = fromMaybe "unknown" finalState.currentRule,
-                        reason = "No proof path succeeded",
-                        partialProof = Nothing
-                      }
-                  ]
-                fps -> fps
-           in pure (Failure failures, finalState)
+  let blocks = dedupBlocks finalState.pendingUserInputs
+      failures = getFailedPaths finalState
+  pure
+    ( SolverOutcome
+        { goalName = goalName,
+          successes = successes,
+          blocked = blocks,
+          failures = failures
+        },
+      finalState
+    )

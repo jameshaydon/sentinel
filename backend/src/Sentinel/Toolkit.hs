@@ -32,6 +32,7 @@ where
 import Data.Aeson (Value)
 import Data.Aeson.Text qualified as Aeson.Text
 import Data.IORef (readIORef)
+import Data.List.NonEmpty qualified as NE
 import Data.Map.Strict qualified as M
 import Data.Text qualified as T
 import Data.Text.Lazy qualified as T.Lazy
@@ -50,22 +51,22 @@ import Sentinel.Sentinel
     addPendingUserInput,
     getAskableStore,
     getContextStore,
+    setProofsFound,
   )
-import Sentinel.Solver (runSolver)
+import Sentinel.Solver (runSolverFull)
 import Sentinel.Solver.Askable (AskableDecl (..), AskableRegistry (..), formatQuestion, lookupAskable)
 import Sentinel.Solver.Combinators (SolverEnv (..), SolverState (..), emptySolverState, withRule)
 import Sentinel.Solver.ToolBindings (ToolBindingRegistry)
 import Sentinel.Solver.Types
   ( BaseFact,
-    FailurePath (..),
     Proof (..),
     Scalar (..),
-    SolverResult (..),
+    SolverOutcome (..),
     SolverSuccess (..),
     UserInputBlock (..),
-    UserInputType (..),
+    formatSolverOutcomeForLLM,
   )
-import Sentinel.Tool (BlockedItem (..), LLMTool, Tool (..), ToolCategory (..), ToolGuard (..), ToolOutput (..), toLLMTool)
+import Sentinel.Tool (LLMTool, Tool (..), ToolCategory (..), ToolGuard (..), ToolOutput (..), toLLMTool)
 
 --------------------------------------------------------------------------------
 -- Toolkit Type
@@ -130,11 +131,12 @@ guardedCallImpl toolkit toolName args = do
       pure $ Denied err
     Just tool -> do
       -- Evaluate the guard based on its type
-      guardResult <- evaluateToolGuard toolkit tool args
+      (guardResult, guardOutcome) <- evaluateToolGuard toolkit tool args
 
       case guardResult of
         ToolGuardPassed proofs -> do
-          liftIO $ putDispLn (Output.GuardPass toolName proofs)
+          unless (isNoGuard tool.guard) $
+            liftIO $ putDispLn (Output.GuardPass toolName proofs)
           -- Execute the tool
           result <- runExceptT (tool.execute args)
           case result of
@@ -144,14 +146,44 @@ guardedCallImpl toolkit toolName args = do
             Right output -> do
               -- Add produced facts
               addFacts output.producedFacts
-              liftIO $ putDispLn (Output.Observation output.observation)
-              pure $ Allowed output.observation
-        ToolGuardDenied reason -> do
-          liftIO $ putDispLn (Output.GuardDenied toolName reason)
-          pure $ Denied reason
+              -- Process tool's solver outcome (register blocks, console display)
+              for_ output.solverOutcome \toolOutcome -> do
+                -- Track whether proofs were found alongside blocks
+                setProofsFound (not (null toolOutcome.successes))
+                -- Register ALL blocked items from the tool's solver outcome
+                for_ toolOutcome.blocked \block ->
+                  addPendingUserInput
+                    block.inputType
+                    block.name
+                    block.arguments
+                    block.question
+                    block.candidates
+                -- Console display
+                liftIO $ putDocLn ("" <> line <> indent 2 (disp toolOutcome))
+              -- Combine observation text
+              let guardText = case guardOutcome of
+                    Just go | not (isNoGuard tool.guard) -> formatSolverOutcomeForLLM go
+                    _ -> ""
+                  toolOutcomeText = maybe "" formatSolverOutcomeForLLM output.solverOutcome
+                  toolObsText = output.observation
+                  combined = T.intercalate "\n" $ filter (not . T.null)
+                    [guardText, toolOutcomeText, toolObsText]
+              liftIO $ when (not (T.null output.observation)) $
+                putDispLn (Output.Observation output.observation)
+              pure $ Allowed combined
+        ToolGuardDenied _reason -> do
+          let deniedText = maybe "Guard failed." formatSolverOutcomeForLLM guardOutcome
+          liftIO $ putDispLn (Output.GuardDenied toolName deniedText)
+          pure $ Denied deniedText
         ToolGuardNeedsInput question -> do
+          let blockedText = maybe "" formatSolverOutcomeForLLM guardOutcome
           liftIO $ putDispLn (Output.NeedsUserInput toolName question.questionText)
-          pure $ AskUser question
+          pure $ AskUser question blockedText
+
+-- | Check if a tool guard is NoGuard.
+isNoGuard :: ToolGuard -> Bool
+isNoGuard NoGuard = True
+isNoGuard _ = False
 
 -- | Result of evaluating any type of tool guard.
 data ToolGuardResult
@@ -162,11 +194,13 @@ data ToolGuardResult
   deriving stock (Show, Eq)
 
 -- | Evaluate a tool's guard based on its type.
+--
+-- Returns the guard result and, for solver-based guards, the full 'SolverOutcome'.
 evaluateToolGuard ::
   Toolkit db ->
   Tool db ->
   Value ->
-  SentinelM db ToolGuardResult
+  SentinelM db (ToolGuardResult, Maybe SolverOutcome)
 evaluateToolGuard toolkit tool args = do
   case tool.guard of
     NoGuard ->
@@ -176,9 +210,9 @@ evaluateToolGuard toolkit tool args = do
                 proof = RuleApplied "no_guard" [],
                 reason = "no_guard"
               }
-       in pure $ ToolGuardPassed (noGuardSuccess :| [])
+       in pure (ToolGuardPassed (noGuardSuccess :| []), Nothing)
     SolverGuardT guardName guardFn -> do
-      -- Use the solver-based guard evaluation via runSolver
+      -- Use the solver-based guard evaluation via runSolverFull
       sentinelEnv <- ask
       -- Get current stores from SentinelEnv
       baseFactStore <- liftIO $ readIORef sentinelEnv.facts
@@ -206,32 +240,42 @@ evaluateToolGuard toolkit tool args = do
                   reason = guardName
                 }
 
-      (result, finalState) <- liftIO $ runSolver solverEnv initState solverAction
+      (outcome, finalState) <- liftIO $ runSolverFull guardName solverEnv initState solverAction
       -- Persist any facts discovered during solver run back to SentinelM
       addFacts (Facts.allBaseFacts finalState.baseFactStore)
-      case result of
-        Success successes ->
-          pure $ ToolGuardPassed successes
-        BlockedOnUserInput block -> do
-          -- Register the pending user input so assessment runs on next turn
-          addPendingUserInput
-            block.inputType
-            block.name
-            block.arguments
-            block.question
-            [] -- No candidates provided from solver
-            -- Convert block to user question
-          pure
-            $ ToolGuardNeedsInput
-              UserQuestion
-                { inputType = block.inputType,
-                  inputName = block.name,
-                  arguments = block.arguments,
-                  questionText = block.question,
-                  candidates = []
-                }
-        Failure failures ->
-          pure $ ToolGuardDenied (formatSolverFailures failures)
+
+      -- Track whether proofs were found alongside blocks
+      setProofsFound (not (null outcome.successes))
+
+      -- Register ALL blocked items from the outcome
+      for_ outcome.blocked \block ->
+        addPendingUserInput
+          block.inputType
+          block.name
+          block.arguments
+          block.question
+          block.candidates
+
+      case NE.nonEmpty outcome.successes of
+        Just successes ->
+          pure (ToolGuardPassed successes, Just outcome)
+        Nothing ->
+          case outcome.blocked of
+            (block : _) ->
+              -- Primary block for the AskUser response
+              pure
+                ( ToolGuardNeedsInput
+                    UserQuestion
+                      { inputType = block.inputType,
+                        inputName = block.name,
+                        arguments = block.arguments,
+                        questionText = block.question,
+                        candidates = block.candidates
+                      },
+                  Just outcome
+                )
+            [] ->
+              pure (ToolGuardDenied (formatSolverOutcomeForLLM outcome), Just outcome)
 
 -- | Create a data tool callback for the solver.
 --
@@ -261,12 +305,6 @@ makeRunDataToolForSolver toolkit toolName args =
               liftIO $ putDispLn (Output.Observation output.observation)
               -- Return the produced facts for the solver to use
               pure $ Right output.producedFacts
-
--- | Format solver failure paths for display.
-formatSolverFailures :: [FailurePath] -> Text
-formatSolverFailures [] = "Guard failed with no specific reason"
-formatSolverFailures failures =
-  T.intercalate "; " [fp.ruleName <> ": " <> fp.reason | fp <- failures]
 
 -- | Summarize current facts for the LLM context.
 summarizeFactsImpl :: SentinelM db Text
@@ -339,45 +377,20 @@ checkGuardExecute tk guardName args = do
   tool <- lookup guardName (extractVerifiableClaims tk) ??: ("Unknown guard: " <> guardName)
 
   -- Run the guard (reusing guard evaluation logic)
-  result <- lift $ runGuardOnly tk tool args
+  (_result, mOutcome) <- lift $ evaluateToolGuard tk tool args
 
-  -- Display the eligibility check result to CLI
-  liftIO $ putDispLn $ case result of
-    ToolGuardPassed proofs -> Output.EligibilityVerified guardName proofs
-    ToolGuardDenied reason -> Output.EligibilityDenied guardName reason
-    ToolGuardNeedsInput question -> Output.EligibilityNeedsInfo guardName question.questionText
-
-  -- Extract blocked items from NeedsInput result
-  let blocked = case result of
-        ToolGuardNeedsInput question ->
-          case question.inputType of
-            AskableInput -> [BlockedAskable question.inputName question.arguments]
-            ContextInput -> [BlockedContext question.inputName]
-        _ -> []
+  -- Display the solver outcome on console
+  for_ mOutcome \outcome ->
+    liftIO $ putDocLn ("" <> line <> indent 2 (disp outcome))
 
   pure
     ToolOutput
-      { observation = formatGuardResult guardName result,
+      { observation = "", -- Framework handles formatting via solverOutcome
         producedFacts = [], -- CheckGuard is informational only
         triggerSideSession = Nothing,
-        blockedOn = blocked
+        solverOutcome = mOutcome
       }
 
--- | Run a tool's guard without executing the tool.
---
--- This is used by CheckGuard tools to verify claims without side effects.
-runGuardOnly :: Toolkit db -> Tool db -> Value -> SentinelM db ToolGuardResult
-runGuardOnly toolkit tool args = evaluateToolGuard toolkit tool args
-
--- | Format the guard result for display to the LLM.
-formatGuardResult :: Text -> ToolGuardResult -> Text
-formatGuardResult claimName = \case
-  ToolGuardPassed (firstProof :| _) ->
-    "VERIFIED: " <> claimName <> " is satisfied. Reason: " <> firstProof.reason
-  ToolGuardDenied reason ->
-    "NOT VERIFIED: " <> claimName <> " failed. Reason: " <> reason
-  ToolGuardNeedsInput question ->
-    "BLOCKED on " <> question.inputName
 
 -- | Add verification support to a toolkit.
 --
@@ -446,7 +459,7 @@ makeDynamicAskContextTool decl =
                 { observation = "Side session triggered for " <> decl.name,
                   producedFacts = [],
                   triggerSideSession = Nothing, -- Handled by agent
-                  blockedOn = []
+                  solverOutcome = Nothing
                 }
         }
 
@@ -474,6 +487,6 @@ makeDynamicAskAskableTool decl args =
                 { observation = "Side session triggered for " <> decl.predicate,
                   producedFacts = [],
                   triggerSideSession = Nothing, -- Handled by agent
-                  blockedOn = []
+                  solverOutcome = Nothing
                 }
         }

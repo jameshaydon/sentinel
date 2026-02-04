@@ -25,13 +25,22 @@ module Sentinel.Solver.Types
     UserInputBlock (..),
     UserInputType (..),
     FailurePath (..),
+
+    -- * Solver Outcome
+    SolverOutcome (..),
+    formatSolverOutcomeForLLM,
+    dedupBlocks,
   )
 where
 
 import Data.Aeson (Value)
 import Data.Aeson qualified as Aeson
+import Data.Aeson.Key qualified as Key
+import Data.Aeson.KeyMap qualified as KM
+import Data.Aeson.Types qualified as Aeson.Types
 import Data.List.NonEmpty qualified as NE
 import Data.Map.Strict qualified as M
+import Data.Text qualified as T
 import Pre
 
 --------------------------------------------------------------------------------
@@ -48,8 +57,27 @@ data Scalar
   = ScBool Bool
   | ScNum Double
   | ScStr Text
+  | ScExpr Text [Scalar]
   deriving stock (Show, Eq, Ord, Generic)
-  deriving anyclass (ToJSON, FromJSON)
+
+instance ToJSON Scalar where
+  toJSON = \case
+    ScBool b -> Aeson.object ["tag" Aeson..= ("ScBool" :: Text), "contents" Aeson..= b]
+    ScNum n -> Aeson.object ["tag" Aeson..= ("ScNum" :: Text), "contents" Aeson..= n]
+    ScStr t -> Aeson.object ["tag" Aeson..= ("ScStr" :: Text), "contents" Aeson..= t]
+    ScExpr name args -> Aeson.object ["tag" Aeson..= ("ScExpr" :: Text), "contents" Aeson..= Aeson.toJSON (name, args)]
+
+instance FromJSON Scalar where
+  parseJSON = Aeson.withObject "Scalar" \o -> do
+    tag <- o Aeson..: "tag" :: Aeson.Types.Parser Text
+    case tag of
+      "ScBool" -> ScBool <$> o Aeson..: "contents"
+      "ScNum" -> ScNum <$> o Aeson..: "contents"
+      "ScStr" -> ScStr <$> o Aeson..: "contents"
+      "ScExpr" -> do
+        (name, args) <- o Aeson..: "contents"
+        pure $ ScExpr name args
+      _ -> fail $ "Unknown Scalar tag: " <> T.unpack tag
 
 -- | Type of a scalar value (for schema validation).
 data ScalarType
@@ -57,6 +85,7 @@ data ScalarType
   | IntType
   | BoolType
   | FloatType
+  | ExprType
   deriving stock (Show, Eq, Ord, Generic)
   deriving anyclass (ToJSON, FromJSON)
 
@@ -66,6 +95,8 @@ scalarToJSON = \case
   ScBool b -> Aeson.Bool b
   ScNum n -> Aeson.Number (realToFrac n)
   ScStr t -> Aeson.String t
+  ScExpr name [] -> Aeson.Object (KM.singleton (Key.fromText "_fn") (Aeson.String name))
+  ScExpr name args -> Aeson.Object (KM.fromList [(Key.fromText "_fn", Aeson.String name), (Key.fromText "_args", Aeson.toJSON (map scalarToJSON args))])
 
 -- | Try to parse a JSON value as a scalar.
 scalarFromJSON :: Value -> Maybe Scalar
@@ -73,6 +104,13 @@ scalarFromJSON = \case
   Aeson.Bool b -> Just (ScBool b)
   Aeson.Number n -> Just (ScNum (realToFrac n))
   Aeson.String t -> Just (ScStr t)
+  Aeson.Object obj
+    | Just (Aeson.String name) <- KM.lookup (Key.fromText "_fn") obj ->
+        let args = case KM.lookup (Key.fromText "_args") obj of
+              Just (Aeson.Array arr) -> traverse scalarFromJSON (toList arr)
+              Nothing -> Just []
+              _ -> Nothing
+         in ScExpr name <$> args
   _ -> Nothing
 
 -- | Display instance for scalars.
@@ -82,6 +120,8 @@ instance Disp Scalar where
     ScBool b -> if b then "true" else "false"
     ScNum n -> pretty (show n)
     ScStr t -> pretty t
+    ScExpr name [] -> pretty name
+    ScExpr name args -> pretty name <> parens (hsep (punctuate comma (disp <$> args)))
 
 -- | Display a scalar for pretty-printing (proof traces, diagnostics).
 -- Uses "true"/"false" for bools and quotes strings.
@@ -90,6 +130,8 @@ dispScalar = \case
   ScBool b -> if b then "true" else "false"
   ScNum n -> pretty (show n)
   ScStr t -> dquotes (pretty t)
+  ScExpr name [] -> pretty name
+  ScExpr name args -> pretty name <> parens (hsep (punctuate comma (dispScalar <$> args)))
 
 -- | Convert a scalar to text (for question formatting, descriptions).
 -- Uses "yes"/"no" for bools and plain strings (no quotes).
@@ -99,6 +141,8 @@ scalarToText = \case
   ScBool False -> "no"
   ScNum n -> fromString (show n)
   ScStr t -> t
+  ScExpr name [] -> name
+  ScExpr name args -> name <> "(" <> T.intercalate ", " (map scalarToText args) <> ")"
 
 --------------------------------------------------------------------------------
 -- Base Facts
@@ -326,3 +370,119 @@ instance Disp SolverResult where
         [ errorText "All paths failed:" <+> pretty (length failures) <+> "path(s) tried",
           vsep (disp <$> failures)
         ]
+
+--------------------------------------------------------------------------------
+-- Solver Outcome
+--------------------------------------------------------------------------------
+
+-- | The full outcome of a solver run: all proofs, all blocks, and all failures.
+--
+-- Unlike 'SolverResult' which collapses to a single case, 'SolverOutcome'
+-- captures everything the solver discovered in a single run. This is useful for
+-- providing complete information to both the LLM and the console display.
+data SolverOutcome = SolverOutcome
+  { -- | Name of the goal that was being proved
+    goalName :: Text,
+    -- | All successful proofs found
+    successes :: [SolverSuccess],
+    -- | All blocked user input requests (deduplicated)
+    blocked :: [UserInputBlock],
+    -- | All failed proof paths
+    failures :: [FailurePath]
+  }
+  deriving stock (Show, Eq, Generic)
+  deriving anyclass (ToJSON, FromJSON)
+
+instance Disp SolverOutcome where
+  disp outcome =
+    vsep $
+      catMaybes
+        [ Just $ label "Goal:" <+> pretty outcome.goalName,
+          proofSection,
+          blockSection,
+          failureSection
+        ]
+    where
+      proofSection = case outcome.successes of
+        [] -> Nothing
+        proofs ->
+          Just $
+            vsep
+              [ successText (pretty (length proofs) <+> "proof(s) found:"),
+                indent 2 (vsep (zipWith dispProof [1 :: Int ..] proofs))
+              ]
+      dispProof i s =
+        vsep [label ("Proof" <+> pretty i <> ":"), indent 2 (disp s)]
+
+      blockSection = case outcome.blocked of
+        [] -> Nothing
+        blocks ->
+          Just $
+            vsep
+              [ label (pretty (length blocks) <+> "question(s) blocking further exploration:"),
+                indent 2 (vsep [label "-" <+> pretty b.question | b <- blocks])
+              ]
+
+      failureSection = case (outcome.successes, outcome.blocked, outcome.failures) of
+        ([], [], fs@(_ : _)) ->
+          Just $
+            vsep
+              [ errorText "All paths failed:" <+> pretty (length fs) <+> "path(s) tried",
+                indent 2 (vsep (disp <$> fs))
+              ]
+        _ -> Nothing
+
+-- | Format a solver outcome as text for the LLM observation.
+--
+-- Uses 'dispText' to render proof trees as plain text. Handles the four
+-- cases: (no proofs, no blocks), (proofs only), (blocks only), (both).
+formatSolverOutcomeForLLM :: SolverOutcome -> Text
+formatSolverOutcomeForLLM outcome =
+  case (outcome.successes, outcome.blocked) of
+    ([], []) ->
+      "Solver: " <> outcome.goalName <> " -- DENIED\n"
+        <> "  All paths failed.\n"
+        <> formatFailuresForLLM outcome.failures
+    ([], blocks) ->
+      "Solver: " <> outcome.goalName <> " -- BLOCKED\n"
+        <> "  0 proof(s) found.\n"
+        <> "  " <> tshow (length blocks) <> " question(s) blocking:\n"
+        <> T.unlines ["    - " <> b.question | b <- blocks]
+    (proofs, []) ->
+      "Solver: " <> outcome.goalName <> "\n"
+        <> "  " <> tshow (length proofs) <> " proof(s) found:\n"
+        <> formatProofsForLLM proofs
+        <> "\n  All paths fully explored."
+    (proofs, blocks) ->
+      "Solver: " <> outcome.goalName <> "\n"
+        <> "  " <> tshow (length proofs) <> " proof(s) found:\n"
+        <> formatProofsForLLM proofs
+        <> "\n  " <> tshow (length blocks) <> " question(s) blocking further exploration:\n"
+        <> T.unlines ["    - " <> b.question | b <- blocks]
+  where
+    formatProofsForLLM :: [SolverSuccess] -> Text
+    formatProofsForLLM ps = T.unlines (zipWith formatOneProof [1 :: Int ..] ps)
+
+    formatOneProof :: Int -> SolverSuccess -> Text
+    formatOneProof i s =
+      "    Proof " <> tshow i <> ":\n"
+        <> T.unlines (map ("      " <>) (T.lines (dispText s)))
+
+    formatFailuresForLLM :: [FailurePath] -> Text
+    formatFailuresForLLM [] = ""
+    formatFailuresForLLM fs =
+      "  Failure paths:\n"
+        <> T.unlines ["    - " <> fp.ruleName <> ": " <> fp.reason | fp <- fs]
+
+-- | De-duplicate blocks by (inputType, name, arguments).
+dedupBlocks :: [UserInputBlock] -> [UserInputBlock]
+dedupBlocks = go []
+  where
+    go _ [] = []
+    go seen (b : bs)
+      | key b `elem` seen = go seen bs
+      | otherwise = b : go (key b : seen) bs
+    key b = (b.inputType, b.name, b.arguments)
+
+tshow :: (Show a) => a -> Text
+tshow = fromString . show

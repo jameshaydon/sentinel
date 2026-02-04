@@ -45,7 +45,10 @@ module Sentinel.Sentinel
 
     -- * User Questions
     UserQuestion (..),
-    describeUserInput,
+
+    -- * Proofs Found Flag
+    setProofsFound,
+    getProofsFound,
 
     -- * Pending User Input Queries
     findPendingContext,
@@ -91,11 +94,6 @@ data UserQuestion = UserQuestion
   }
   deriving stock (Show, Eq, Generic)
 
--- | Helper for display (replaces factDescription usage)
-describeUserInput :: UserQuestion -> Text
-describeUserInput q = case q.inputType of
-  ContextInput -> "Context: " <> q.inputName
-  AskableInput -> "Askable: " <> q.inputName
 
 --------------------------------------------------------------------------------
 -- Pending User Input
@@ -144,8 +142,9 @@ data SentinelResult
     Allowed Text
   | -- | Tool call was denied by guard, with the reason
     Denied Text
-  | -- | Sentinel needs user input before it can proceed
-    AskUser UserQuestion
+  | -- | Sentinel needs user input before it can proceed.
+    --   The 'Text' field carries the formatted solver outcome for the LLM.
+    AskUser UserQuestion Text
   deriving stock (Show, Eq, Generic)
 
 --------------------------------------------------------------------------------
@@ -167,6 +166,8 @@ data SentinelEnv db = SentinelEnv
     askableStore :: IORef AskableFactStore,
     -- | Pending user inputs awaiting response
     pendingUserInputs :: IORef [PendingUserInput],
+    -- | Whether the last solver run found any proofs (alongside blocks)
+    proofsFound :: IORef Bool,
     -- | Debug verbosity level (mutable for runtime adjustment)
     verbosity :: IORef Verbosity
   }
@@ -183,6 +184,7 @@ newSentinelEnv initialDb initialFacts sessionData contextDecls initialVerbosity 
   factsRef <- newIORef initialFacts
   askableRef <- newIORef emptyAskableFactStore
   pendingUserInputsRef <- newIORef []
+  proofsFoundRef <- newIORef False
   verbosityRef <- newIORef initialVerbosity
 
   -- Seed context from session data
@@ -197,6 +199,7 @@ newSentinelEnv initialDb initialFacts sessionData contextDecls initialVerbosity 
         contextStore = contextRef,
         askableStore = askableRef,
         pendingUserInputs = pendingUserInputsRef,
+        proofsFound = proofsFoundRef,
         verbosity = verbosityRef
       }
 
@@ -350,6 +353,8 @@ formatContextForLLM store =
     formatScalar (ScStr t) = t
     formatScalar (ScNum n) = T.pack (show n)
     formatScalar (ScBool b) = if b then "true" else "false"
+    formatScalar (ScExpr name []) = name
+    formatScalar (ScExpr name args) = name <> "(" <> T.intercalate ", " (map formatScalar args) <> ")"
 
     formatMethod SystemSeeded = " (authenticated)"
     formatMethod (UserSelection _) = " (user selected)"
@@ -428,6 +433,22 @@ getPendingAskables :: SentinelM db [(Text, [Scalar])]
 getPendingAskables = do
   pending <- getPendingUserInputs
   pure [(p.pendingName, p.pendingArguments) | p <- pending, p.pendingType == AskableInput]
+
+--------------------------------------------------------------------------------
+-- Proofs Found Flag
+--------------------------------------------------------------------------------
+
+-- | Set whether the last solver run found proofs.
+setProofsFound :: Bool -> SentinelM db ()
+setProofsFound found = do
+  ref <- asks (.proofsFound)
+  liftIO $ writeIORef ref found
+
+-- | Get whether the last solver run found proofs.
+getProofsFound :: SentinelM db Bool
+getProofsFound = do
+  ref <- asks (.proofsFound)
+  liftIO $ readIORef ref
 
 --------------------------------------------------------------------------------
 -- Verbosity / Debug Operations
