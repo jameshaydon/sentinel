@@ -8,6 +8,8 @@ correctly, Sentinel uses a solver to generate proofs that tool actions are
 permitted, according to a policy. If they are not, the LLM agent is guided
 towards a solution.
 
+![Sentinel frontend showing the AirLogic refund example](images/screenshot.png)
+
 ## The Problem
 
 LLMs can't be deployed in regulated rule-based environments without better

@@ -1,7 +1,6 @@
 .DS_Store
 .idea
 *.log
-*.png
 tmp/
 
 .direnv
@@ -11,4 +10,7 @@ result
 
 # claude
 .claude/
+CLAUDE.md
+
+examples/
 
