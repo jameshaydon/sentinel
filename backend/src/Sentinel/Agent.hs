@@ -154,12 +154,12 @@ handleAskTool callId toolName = do
   mPendingAsk <- liftIO $ Sentinel.runSentinelM env.sentinelEnv (Sentinel.findPendingAskable name)
 
   case mPendingCtx of
-    Just _pending -> do
+    Just pending -> do
       -- Context variable side session
       case Toolkit.lookupContextDecl name env.toolkit.contextDecls of
         Nothing -> pure $ ToolMsg callId ("ERROR: Unknown context variable: " <> name)
         Just decl -> do
-          let spec = ContextSession name decl
+          let spec = ContextSession name decl pending.pendingCandidates
           summary <- runSideSession spec
           -- Clear from Sentinel's pending list
           liftIO $ Sentinel.runSentinelM env.sentinelEnv (Sentinel.clearPendingUserInput name)
@@ -217,7 +217,7 @@ runSideSession :: SideSessionSpec -> AgentM db Text
 runSideSession spec = do
   env <- ask
   let (question, sidePrompt, sideTools) = case spec of
-        ContextSession name decl ->
+        ContextSession name decl _candidates ->
           let q = maybe ("Please specify " <> name) (.questionTemplate) decl.askable
               p = SideSession.formatContextSidePrompt decl.valueType q
               tools = SideSession.contextSessionTools decl.valueType
@@ -230,12 +230,12 @@ runSideSession spec = do
 
   -- Build structured InputMeta for the frontend
   let meta = case spec of
-        ContextSession name decl ->
+        ContextSession name _decl pendingCandidates ->
           InputMeta
             { question = question,
               inputKind = ContextInputKind,
               inputName = name,
-              candidates = maybe [] (map scalarToText . (.candidates)) decl.askable
+              candidates = map scalarToText pendingCandidates
             }
         AskableSession predName _decl _args ->
           InputMeta
@@ -270,7 +270,7 @@ applySideSessionResult ::
   AgentM db Text
 applySideSessionResult spec question userResponse = \case
   SideSession.ValueSet scalar -> case spec of
-    ContextSession name _decl -> do
+    ContextSession name _decl _candidates -> do
       env <- ask
       -- Set the context value in Sentinel
       liftIO $ Sentinel.runSentinelM env.sentinelEnv (Sentinel.setContextValue name scalar [])

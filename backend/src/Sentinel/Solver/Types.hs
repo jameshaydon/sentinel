@@ -189,8 +189,8 @@ instance Disp BaseFact where
 data Proof
   = -- | Used an existing fact from the store
     FactUsed BaseFact
-  | -- | Applied a named rule with sub-proofs for premises
-    RuleApplied Text [Proof]
+  | -- | Applied a named rule with arguments and sub-proofs for premises
+    RuleApplied Text [Scalar] [Proof]
   | -- | Resolved a context variable to a value
     ContextBound Text Scalar
   deriving stock (Show, Eq, Generic)
@@ -199,9 +199,11 @@ data Proof
 instance Disp Proof where
   disp = \case
     FactUsed fact -> "fact:" <+> disp fact
-    RuleApplied name proofs ->
+    RuleApplied name args proofs ->
       vsep
-        [ "rule:" <+> pretty name,
+        [ "rule:" <+> case args of
+            [] -> pretty name
+            _ -> pretty name <> parens (hsep (punctuate comma (dispScalar <$> args))),
           indent 2 (vsep (disp <$> proofs))
         ]
     ContextBound name value ->

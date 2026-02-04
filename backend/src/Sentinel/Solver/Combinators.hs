@@ -22,6 +22,7 @@ module Sentinel.Solver.Combinators
 
     -- * Core Combinators
     queryPredicate,
+    queryAll,
     andAll,
     oneOf,
     require,
@@ -50,9 +51,10 @@ module Sentinel.Solver.Combinators
   )
 where
 
-import Control.Monad.Logic (LogicT, ifte, observeAllT)
+import Control.Monad.Logic (LogicT, ifte, observeAllT, once)
 import Control.Monad.State.Strict (StateT, gets, modify', runStateT)
 import Data.Aeson (Value)
+import Data.Text qualified as T
 import Pre
 import Sentinel.Context (AskableSpec (..), ContextDecl (..), ContextDecls, ContextStore, getContext, lookupContextDecl)
 import Sentinel.Facts
@@ -100,8 +102,8 @@ data SolverState = SolverState
     askableFactStore :: AskableFactStore,
     -- | Current proof being constructed (stack of sub-proofs)
     proofStack :: [Proof],
-    -- | Current rule name (for error messages)
-    currentRule :: Maybe Text,
+    -- | Current rule name and arguments (for error messages and proof construction)
+    currentRule :: Maybe (Text, [Scalar]),
     -- | Current reason (for success reporting)
     currentReason :: Maybe Text,
     -- | User input requests that blocked proof paths
@@ -237,12 +239,36 @@ queryPredicate predName inputArgs = do
       length queryArgs <= length factArgs
         && and (zipWith (==) queryArgs factArgs)
 
+-- | Query a predicate and return all matching facts as a plain list.
+--
+-- Unlike 'queryPredicate' which branches via LogicT (one fact per alternative),
+-- 'queryAll' triggers the data tool (if facts aren't already in the store) using
+-- 'once', then reads all matching facts from the store as a plain list.
+-- This is useful when you need the complete set of facts (e.g., to compute
+-- candidate options for 'contextVar') without introducing backtracking branches.
+queryAll :: Text -> [Scalar] -> SolverM [BaseFact]
+queryAll predName inputArgs = do
+  -- Trigger the data tool via once (we just want the side-effect of populating the store)
+  _ <- once (queryPredicate predName inputArgs) <|> pure (BaseFact predName inputArgs)
+  -- Now read all matching facts from the store
+  allFacts <- gets (lookupBaseFacts predName . (.baseFactStore))
+  pure $ filter (matchesFact inputArgs) allFacts
+  where
+    matchesFact :: [Scalar] -> BaseFact -> Bool
+    matchesFact args fact =
+      fact.predicateName == predName
+        && matchesArgs args fact.arguments
+
+    matchesArgs :: [Scalar] -> [Scalar] -> Bool
+    matchesArgs queryArgs factArgs =
+      length queryArgs <= length factArgs
+        && and (zipWith (==) queryArgs factArgs)
+
 -- | All premises must succeed. Collects proofs from each.
 andAll :: [SolverM Proof] -> SolverM Proof
 andAll premises = do
   proofs <- traverse id premises
-  rule <- gets (.currentRule)
-  pure $ RuleApplied (fromMaybe "all_of" rule) proofs
+  pure $ RuleApplied "all_of" [] proofs
 
 -- | Try alternatives in order, backtracking on failure.
 --
@@ -253,16 +279,16 @@ oneOf = asum
 -- | Require a boolean condition to hold.
 require :: Bool -> Text -> SolverM Proof
 require condition desc
-  | condition = pure $ RuleApplied ("require: " <> desc) []
+  | condition = pure $ RuleApplied ("require: " <> desc) [] []
   | otherwise = failWith $ "Requirement failed: " <> desc
 
 -- | Run a sub-proof under a named rule.
 --
--- The rule name is recorded in the proof trace.
-withRule :: Text -> SolverM a -> SolverM a
-withRule ruleName action = do
+-- The rule name and arguments are recorded in the proof trace.
+withRule :: Text -> [Scalar] -> SolverM a -> SolverM a
+withRule ruleName ruleArgs action = do
   oldRule <- gets (.currentRule)
-  modify' $ \s -> s {currentRule = Just ruleName}
+  modify' $ \s -> s {currentRule = Just (ruleName, ruleArgs)}
   result <- action
   modify' $ \s -> s {currentRule = oldRule}
   pure result
@@ -276,8 +302,12 @@ withRule ruleName action = do
 -- If the context variable is not established, this records a UserInputBlock
 -- in state and fails the branch with 'mzero'. LogicT will backtrack to try
 -- other paths. The pending block can be checked after all paths are exhausted.
-contextVar :: Text -> SolverM Scalar
-contextVar varName = do
+--
+-- The @options@ parameter controls the candidate values presented to the user:
+-- - @Nothing@: free-form text input (or uses static candidates from the declaration)
+-- - @Just candidates@: clickable choices computed at solver time
+contextVar :: Text -> Maybe [Scalar] -> SolverM Scalar
+contextVar varName options = do
   ctxStore <- asks (.contextStore)
   case getContext varName ctxStore of
     Just value -> do
@@ -298,6 +328,8 @@ contextVar varName = do
               failWith $ "Context variable '" <> varName <> "' is not askable and not seeded"
             Just spec -> do
               -- Record the block and fail this branch
+              -- Use caller-provided options if given, otherwise fall back to static candidates
+              let candidates = fromMaybe spec.candidates options
               partialProof <- getCurrentProof
               let userInputBlock =
                     UserInputBlock
@@ -305,7 +337,7 @@ contextVar varName = do
                         name = varName,
                         question = spec.questionTemplate,
                         arguments = [],
-                        candidates = spec.candidates,
+                        candidates = candidates,
                         partialProof = partialProof
                       }
               modify' $ \s ->
@@ -370,7 +402,8 @@ getCurrentProof = do
     [p] -> pure (Just p)
     ps -> do
       rule <- gets (.currentRule)
-      pure $ Just $ RuleApplied (fromMaybe "proof" rule) ps
+      let (name, args) = fromMaybe ("proof", []) rule
+      pure $ Just $ RuleApplied name args ps
 
 -- | Append a proof step to the current proof stack.
 appendProof :: Proof -> SolverM ()
@@ -398,8 +431,7 @@ ifThenElse :: SolverM Proof -> SolverM Proof -> SolverM Proof -> SolverM Proof
 ifThenElse cond thenBranch elseBranch =
   ifte cond (\condProof -> do
     thenProof <- thenBranch
-    rule <- gets (.currentRule)
-    pure $ RuleApplied (fromMaybe "if_then_else" rule) [condProof, thenProof]
+    pure $ RuleApplied "if_then_else" [] [condProof, thenProof]
   ) elseBranch
 
 --------------------------------------------------------------------------------
@@ -412,7 +444,11 @@ ifThenElse cond thenBranch elseBranch =
 -- then uses LogicT's mzero to backtrack and try alternatives.
 failWith :: Text -> SolverM a
 failWith msg = do
-  ruleName <- gets (fromMaybe "unknown" . (.currentRule))
+  rule <- gets (.currentRule)
+  let ruleName = case rule of
+        Nothing -> "unknown"
+        Just (name, []) -> name
+        Just (name, args) -> name <> "(" <> T.intercalate ", " (map scalarToText args) <> ")"
   partialProof <- getCurrentProof
   let failure =
         FailurePath

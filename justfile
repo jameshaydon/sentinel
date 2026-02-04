@@ -43,6 +43,11 @@ frontend-dev:
 frontend-build:
   cd sentinel-web && npm run build
 
+# Type-check the frontend
+[group('lint')]
+frontend-check:
+  cd sentinel-web && npx svelte-check --tsconfig ./tsconfig.json
+
 [group('gen')]
 frontend-install:
   cd sentinel-web && npm install

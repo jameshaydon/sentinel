@@ -203,7 +203,9 @@ data SentinelEnv db = SentinelEnv
     -- | Output channel for display events
     eventSink :: EventSink,
     -- | Channel for side-session user input
-    userInput :: UserInput
+    userInput :: UserInput,
+    -- | Callback fired whenever the fact store changes
+    factStoreSink :: BaseFactStore -> IO ()
   }
 
 -- | Create a new Sentinel environment with initial database, facts, and session data.
@@ -219,8 +221,9 @@ newSentinelEnv ::
   Verbosity ->
   EventSink ->
   UserInput ->
+  (BaseFactStore -> IO ()) ->
   IO (SentinelEnv db)
-newSentinelEnv initialDb initialFacts sessionData contextDecls initialVerbosity sink input = do
+newSentinelEnv initialDb initialFacts sessionData contextDecls initialVerbosity sink input factSink = do
   -- Seed context from session data
   now <- getCurrentTime
   let seededContext = seedContextFromSession sessionData contextDecls now
@@ -241,7 +244,8 @@ newSentinelEnv initialDb initialFacts sessionData contextDecls initialVerbosity 
     SentinelEnv
       { stateRef = ref,
         eventSink = sink,
-        userInput = input
+        userInput = input,
+        factStoreSink = factSink
       }
 
 -- | Seed context variables from session data based on context declarations.
@@ -338,9 +342,15 @@ instance HasFactStore (SentinelM db) where
   addFact fact = do
     ref <- asks (.stateRef)
     liftIO $ modifyIORef' ref (over #facts (Facts.addBaseFact fact))
+    store <- getFactStore
+    sink <- asks (.factStoreSink)
+    liftIO $ sink store
   addFacts newFacts = do
     ref <- asks (.stateRef)
     liftIO $ modifyIORef' ref (over #facts (Facts.addBaseFacts newFacts))
+    store <- getFactStore
+    sink <- asks (.factStoreSink)
+    liftIO $ sink store
   getFactStore = do
     ref <- asks (.stateRef)
     liftIO $ (.facts) <$> readIORef ref

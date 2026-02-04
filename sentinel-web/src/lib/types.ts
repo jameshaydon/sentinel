@@ -11,12 +11,29 @@ export interface InputMeta {
 	candidates: string[];
 }
 
+// Scalar values from the solver type system
+export type Scalar =
+	| { tag: 'ScBool'; contents: boolean }
+	| { tag: 'ScNum'; contents: number }
+	| { tag: 'ScStr'; contents: string }
+	| { tag: 'ScExpr'; contents: [string, Scalar[]] };
+
+export interface BaseFact {
+	predicateName: string;
+	arguments: Scalar[];
+}
+
+export interface BaseFactStore {
+	factsByPredicate: Record<string, BaseFact[]>;
+}
+
 export type ServerMessage =
 	| { tag: 'DebugEvent'; contents: string }
 	| { tag: 'ChatResponse'; contents: string }
 	| { tag: 'InputRequest'; contents: InputMeta }
 	| { tag: 'Ready'; contents: string }
-	| { tag: 'ServerError'; contents: string };
+	| { tag: 'ServerError'; contents: string }
+	| { tag: 'FactStoreUpdate'; contents: BaseFactStore };
 
 export type ClientMessage =
 	| { tag: 'UserChat'; contents: string }

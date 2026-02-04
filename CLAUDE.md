@@ -16,6 +16,7 @@ nix flake check # run all nix flake checks
 just frontend-install  # npm install in sentinel-web/
 just frontend-dev      # Start Vite dev server (http://localhost:5173)
 just frontend-build    # Production build to sentinel-web/build/
+just frontend-check    # Type-check the frontend (svelte-check)
 ```
 
 ## Running
@@ -26,10 +27,10 @@ cabal run repl -- --example aircanada --user usr_james_doe
 cabal run repl -- --example passport --user usr_test
 cabal run repl -- --help  # Show CLI options
 
-# WebSocket mode (for the Svelte frontend)
-cabal run repl -- --example passport --user usr_test --mode websocket --port 8080
-# Then in another terminal: just frontend-dev
-# Open http://localhost:5173
+# WebSocket mode + Svelte frontend (two terminals)
+just backend-ws                                # default: passport, port 9090
+just frontend-dev                              # http://localhost:5173
+# Override: just backend-ws aircanada usr_james_doe 9090
 ```
 
 ## Navigation Guide
@@ -81,6 +82,7 @@ cabal run repl -- --example passport --user usr_test --mode websocket --port 808
 - **Fact Store**: Working memory of ground predicates established during the session
 - **Proof Trace**: Audit trail showing how conclusions were derived
 - **SentinelState**: All mutable session state in a single `IORef` (db, facts, context, askables, pending inputs, proofsFound, verbosity)
+- **FactStoreSink**: Callback in `SentinelEnv` (`BaseFactStore -> IO ()`) fired whenever `addFact`/`addFacts` mutates the fact store. WebSocket mode sends a `FactStoreUpdate` message; console mode uses a no-op sink.
 - **EventSink**: Abstraction for display output (`Doc Ann -> IO ()`); console impl uses ANSI-styled `putDocLn`
 - **UserInput**: Abstraction for side-session input (`InputMeta -> IO Text`); console impl prints prompt and reads `getLine`, WebSocket impl sends `InputRequest` and waits for `InputResponse`
 - **InputMeta**: Structured metadata for input requests — carries `question`, `inputKind` (Context/Askable), `inputName`, and `candidates` list, enabling the frontend to render appropriate widgets
@@ -197,12 +199,13 @@ examples/
 
 ## Solver Combinators (Sentinel.Solver.Combinators)
 ```haskell
-queryPredicate :: Text -> [Scalar] -> SolverM [Scalar]  -- Fetch/derive fact
+queryPredicate :: Text -> [Scalar] -> SolverM BaseFact  -- Fetch/derive fact (branches via LogicT)
+queryAll :: Text -> [Scalar] -> SolverM [BaseFact]      -- Fetch all matching facts as plain list
 oneOf :: [SolverM a] -> SolverM a                       -- Backtracking alternatives
 andAll :: [SolverM Proof] -> SolverM [Proof]            -- All must succeed
 require :: Bool -> Text -> SolverM Proof                -- Boolean condition
-withRule :: Text -> SolverM a -> SolverM a              -- Name a proof step
-contextVar :: Text -> SolverM Scalar                    -- Get context or block
+withRule :: Text -> [Scalar] -> SolverM a -> SolverM a   -- Name a proof step with arguments
+contextVar :: Text -> Maybe [Scalar] -> SolverM Scalar  -- Get context or block; Nothing=free-form, Just=clickable options
 askable :: Text -> [Scalar] -> SolverM Proof            -- User confirm or block
 orElse :: SolverM a -> SolverM a -> SolverM a           -- Committed-choice fallback (ifte)
 ifThenElse :: SolverM Proof -> SolverM Proof -> SolverM Proof -> SolverM Proof  -- Conditional
@@ -235,12 +238,9 @@ Pre-check askables use `possibly_british` / `possibly_brit_otbd` naming to clari
 
 ## Frontend (sentinel-web)
 
-SvelteKit SPA connecting to the backend via WebSocket (`ws://localhost:8080`). Uses Svelte 5 runes for reactive state.
+SvelteKit SPA connecting to the backend via WebSocket (default `ws://localhost:9090`, configurable via `?port=` query param). See `sentinel-web/CLAUDE.md` for frontend-specific details.
 
-- **WebSocket protocol**: `ServerMessage` (DebugEvent, ChatResponse, InputRequest, Ready, ServerError) / `ClientMessage` (UserChat, InputResponse). Types in `types.ts` must stay in sync with `WebSocket.hs`. Aeson Generic encoding: nullary sum constructors are plain strings, constructors with one field use `{ tag, contents }`.
-- **InputWidget**: Renders inline widgets based on `InputMeta.inputKind` — Yes/No buttons for `AskableInputKind`, candidate buttons for `ContextInputKind` with candidates, text input otherwise.
-- **Layout**: Two-pane on desktop (40% debug / 60% chat), chat-only on mobile with debug events inline as collapsible `<details>`.
-- **Stack**: SvelteKit + TypeScript + Tailwind CSS v4 + adapter-static (SPA mode).
+- **WebSocket protocol**: `ServerMessage` / `ClientMessage` types in `sentinel-web/src/lib/types.ts` must stay in sync with `WebSocket.hs`. Aeson Generic encoding: nullary sum constructors are plain strings, constructors with one field use `{ tag, contents }`. `FactStoreUpdate` sends the full `BaseFactStore` whenever facts change; the frontend stores it reactively and renders it in the debug pane.
 
 ## Current State
 

@@ -131,7 +131,7 @@ checkEligibilityQuery =
           <> "Call this repeatedly after answering blocked questions to discover more proofs.",
       params = Schema.emptyObjectSchema,
       goal = \_args -> do
-        person <- contextVar "applicant"
+        person <- contextVar "applicant" Nothing
         brit person
     }
 

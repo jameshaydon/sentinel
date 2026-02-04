@@ -21,6 +21,7 @@ import Network.WebSockets qualified as WS
 import Pre
 import Sentinel.Agent (AgentConfig, Message, runAgent)
 import Sentinel.Example (Example (..), setupExample)
+import Sentinel.Facts (BaseFactStore)
 import Sentinel.Sentinel (EventSink (..), InputMeta, Sentinel, SentinelEnv, SessionData, UserInput (..), Verbosity)
 import Sentinel.Toolkit (Toolkit)
 
@@ -40,6 +41,8 @@ data ServerMessage
     Ready Text
   | -- | Error message
     ServerError Text
+  | -- | Fact store state update (sent whenever facts change)
+    FactStoreUpdate BaseFactStore
   deriving stock (Generic, Show)
   deriving anyclass (ToJSON)
 
@@ -146,8 +149,10 @@ application config ex sessionData verbosityLevel pending = do
         sink = wsEventSink ws
         input = wsUserInput ws
 
+    let factSink store = sendMessage conn (FactStoreUpdate store)
+
     (sysPrompt, sentinel, sentinelEnv, toolkit) <-
-      setupExample ex sessionData verbosityLevel sink input
+      setupExample ex sessionData verbosityLevel sink input factSink
 
     sendMessage conn (Ready ("Connected to " <> ex.name <> " example"))
 
