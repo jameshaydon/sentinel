@@ -11,14 +11,25 @@ just weeder # Detect dead code (use when task complete)
 just test   # Test (no tests for now, ignore)
 nix build   # build the nix package
 nix flake check # run all nix flake checks
+
+# Frontend
+just frontend-install  # npm install in sentinel-web/
+just frontend-dev      # Start Vite dev server (http://localhost:5173)
+just frontend-build    # Production build to sentinel-web/build/
 ```
 
 ## Running
 ```bash
+# Console REPL
 cabal run repl -- --example airlogic --user usr_sarah_chen
 cabal run repl -- --example aircanada --user usr_james_doe
 cabal run repl -- --example passport --user usr_test
 cabal run repl -- --help  # Show CLI options
+
+# WebSocket mode (for the Svelte frontend)
+cabal run repl -- --example passport --user usr_test --mode websocket --port 8080
+# Then in another terminal: just frontend-dev
+# Open http://localhost:5173
 ```
 
 ## Navigation Guide
@@ -37,8 +48,9 @@ cabal run repl -- --help  # Show CLI options
 - `Output.hs`, `Pretty.hs` — Console formatting, colors, display
 - `JSON.hs`, `Schema.hs` — JSON serialization utilities
 - `LLM.hs` — OpenAI API integration
-- `App.hs` — CLI argument parsing & example loading
-- `Example.hs` — Example packaging & REPL scaffolding
+- `App.hs` — CLI argument parsing & example loading (`--mode console|websocket`, `--port`)
+- `Example.hs` — Example packaging, `setupExample` (shared init), REPL scaffolding
+- `WebSocket.hs` — WebSocket server mode (ServerMessage/ClientMessage JSON protocol, `InputRequest` carries `InputMeta`)
 
 ### Common Tasks
 | Task | Look at | Skip |
@@ -48,6 +60,8 @@ cabal run repl -- --help  # Show CLI options
 | Change fact storage | `Facts.hs` | Output, Pretty, LLM |
 | Modify agent behavior | `Agent.hs` | Output, App |
 | Add domain example | `Examples/` directory | Core Sentinel modules |
+| Change frontend UI | `sentinel-web/src/` | Backend modules |
+| Change WebSocket protocol | `WebSocket.hs` + `sentinel-web/src/lib/types.ts` | Examples |
 
 ## Architecture Overview
 
@@ -68,7 +82,8 @@ cabal run repl -- --help  # Show CLI options
 - **Proof Trace**: Audit trail showing how conclusions were derived
 - **SentinelState**: All mutable session state in a single `IORef` (db, facts, context, askables, pending inputs, proofsFound, verbosity)
 - **EventSink**: Abstraction for display output (`Doc Ann -> IO ()`); console impl uses ANSI-styled `putDocLn`
-- **UserInput**: Abstraction for side-session stdin (`Text -> IO Text`); console impl prints prompt and reads `getLine`
+- **UserInput**: Abstraction for side-session input (`InputMeta -> IO Text`); console impl prints prompt and reads `getLine`, WebSocket impl sends `InputRequest` and waits for `InputResponse`
+- **InputMeta**: Structured metadata for input requests — carries `question`, `inputKind` (Context/Askable), `inputName`, and `candidates` list, enabling the frontend to render appropriate widgets
 
 ### SolverOutcome
 
@@ -117,8 +132,9 @@ backend/
 │   │   ├── JSON.hs                      # JSON utilities
 │   │   ├── Schema.hs                    # JSON schema helpers
 │   │   ├── LLM.hs                       # OpenAI integration
+│   │   ├── WebSocket.hs                  # WebSocket server mode
 │   │   ├── App.hs                       # CLI & example loading
-│   │   └── Example.hs                   # Example packaging
+│   │   └── Example.hs                   # Example packaging & shared setup
 │   │
 │   └── Examples/
 │       ├── AirCanada/
@@ -137,6 +153,22 @@ backend/
 │           └── Types.hs                 # PersonId (Scalar), PassportDB
 ├── test/Main.hs
 └── package.yaml                         # Hpack config (source of truth)
+
+sentinel-web/                            # SvelteKit frontend (SPA)
+├── src/
+│   ├── lib/
+│   │   ├── types.ts                     # TypeScript protocol types (mirrors WebSocket.hs)
+│   │   ├── websocket.svelte.ts          # Svelte 5 runes WebSocket client (singleton)
+│   │   └── components/
+│   │       ├── ChatPane.svelte          # Chat messages, auto-scroll, thinking indicator
+│   │       ├── DebugPane.svelte         # Dark terminal-style debug log
+│   │       └── InputWidget.svelte       # Inline yes/no, candidate buttons, text input
+│   └── routes/
+│       ├── +layout.svelte               # Root layout (Tailwind CSS import)
+│       ├── +layout.ts                   # SPA mode (ssr=false)
+│       └── +page.svelte                 # Two-pane layout (debug left, chat right)
+├── svelte.config.js                     # adapter-static with SPA fallback
+└── package.json
 
 examples/
 └── air-canada/
@@ -200,6 +232,15 @@ AirLogic still uses `withVerification` (generating `CheckGuard_*` tools) instead
 The `applicant` is a **context variable** (not a constant). When the solver runs `contextVar "applicant"`, it either resolves to the set value (e.g., `ScStr "Romi Haydon"`) or blocks, causing the framework to create an `Ask_applicant` tool. Person identifiers use `ScExpr` compound terms (e.g., `ScExpr "mother" [ScStr "Romi Haydon"]`), which render natively as `mother(Romi Haydon)` via `scalarToText`. Helper functions `motherOf` and `fatherOf` are in `Types.hs`.
 
 Pre-check askables use `possibly_british` / `possibly_brit_otbd` naming to clarify they are pruning checks, not standalone proofs.
+
+## Frontend (sentinel-web)
+
+SvelteKit SPA connecting to the backend via WebSocket (`ws://localhost:8080`). Uses Svelte 5 runes for reactive state.
+
+- **WebSocket protocol**: `ServerMessage` (DebugEvent, ChatResponse, InputRequest, Ready, ServerError) / `ClientMessage` (UserChat, InputResponse). Types in `types.ts` must stay in sync with `WebSocket.hs`. Aeson Generic encoding: nullary sum constructors are plain strings, constructors with one field use `{ tag, contents }`.
+- **InputWidget**: Renders inline widgets based on `InputMeta.inputKind` — Yes/No buttons for `AskableInputKind`, candidate buttons for `ContextInputKind` with candidates, text input otherwise.
+- **Layout**: Two-pane on desktop (40% debug / 60% chat), chat-only on mobile with debug events inline as collapsible `<details>`.
+- **Stack**: SvelteKit + TypeScript + Tailwind CSS v4 + adapter-static (SPA mode).
 
 ## Current State
 

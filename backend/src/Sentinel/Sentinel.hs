@@ -71,6 +71,8 @@ module Sentinel.Sentinel
     -- * Re-exports from Event
     EventSink (..),
     UserInput (..),
+    InputKind (..),
+    InputMeta (..),
     consoleEventSink,
     consoleUserInput,
   )
@@ -84,7 +86,7 @@ import Data.Time (UTCTime, getCurrentTime)
 import Pre
 import Sentinel.Context (ContextDecl (..), ContextDecls (..), ContextEstablishment (..), ContextStore, EstablishmentMethod (..), SeedSpec (..), emptyContextStore)
 import Sentinel.Context qualified as Context
-import Sentinel.Event (EventSink (..), UserInput (..), consoleEventSink, consoleUserInput)
+import Sentinel.Event (EventSink (..), InputKind (..), InputMeta (..), UserInput (..), consoleEventSink, consoleUserInput)
 import Sentinel.Facts (AskableFactStore, BaseFactStore, HasFactStore (..), emptyAskableFactStore)
 import Sentinel.Facts qualified as Facts
 import Sentinel.Solver.Types (Scalar (..), UserInputType (..))

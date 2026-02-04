@@ -49,7 +49,7 @@ import Sentinel.Schema qualified as Schema
 import Sentinel.Sentinel (getContextStore, getDb)
 import Sentinel.Solver.Askable (AskableDecl (..), AskableRegistry, EvidenceType (..), declareAskable, emptyAskableRegistry)
 import Sentinel.Solver.Combinators (SolverM, askable, contextVar, oneOf, queryPredicate, require)
-import Sentinel.Solver.Types (BaseFact (..), Proof (..), Scalar (..), ScalarType (..), scalarToText)
+import Sentinel.Solver.Types (BaseFact (..), Proof (..), Scalar (..), ScalarType (..), factOutput, scalarToText)
 import Sentinel.Tool (Guard, Query (..), Tool (..), ToolCategory (..), ToolGuard (..), ToolOutput (..))
 import Sentinel.Toolkit (Toolkit (..))
 
@@ -461,7 +461,7 @@ refundEligibilityQuery =
 voucherEligibilityProof :: Scalar -> Scalar -> SolverM Proof
 voucherEligibilityProof bookingId user = do
   fareClassFact <- queryPredicate "booking_fare_class" [bookingId]
-  let fareClass = fareClassFact.arguments !! 1
+  let fareClass = fareClassFact & factOutput
   fareCheck <- require (fareClass == ScStr "Basic") "fare_class == Basic"
   let fareProof = RuleApplied "basic_fare_class" [FactUsed fareClassFact, fareCheck]
 
@@ -512,7 +512,7 @@ airlineFaultProof :: Scalar -> SolverM Proof
 airlineFaultProof bookingId = do
   -- Get the flight for this booking
   flightFact <- queryPredicate "booking_flight" [bookingId]
-  let flightId = flightFact.arguments !! 1
+  let flightId = flightFact & factOutput
 
   -- Check if airline is at fault (via cancellation or delay)
   faultProof <-
@@ -520,13 +520,13 @@ airlineFaultProof bookingId = do
       [ do
           -- Path 1: Flight cancelled
           statusFact <- queryPredicate "flight_status" [flightId]
-          let status = statusFact.arguments !! 1
+          let status = statusFact & factOutput
           proof <- require (status == ScStr "Cancelled") "status == Cancelled"
           pure $ RuleApplied "flight_cancelled" [FactUsed statusFact, proof],
         do
           -- Path 2: Delay > 180 minutes
           delayFact <- queryPredicate "flight_delay_minutes" [flightId]
-          let mins = getScalarNum (delayFact.arguments !! 1)
+          let mins = getScalarNum (delayFact & factOutput)
           proof <- require (mins > 180) "delay_minutes > 180"
           pure $ RuleApplied "significant_delay(>3h)" [FactUsed delayFact, proof]
       ]
@@ -538,17 +538,17 @@ eu261Proof :: Scalar -> SolverM Proof
 eu261Proof bookingId = do
   -- Get the flight for this booking
   flightFact <- queryPredicate "booking_flight" [bookingId]
-  let flightId = flightFact.arguments !! 1
+  let flightId = flightFact & factOutput
 
   -- Get departure airport and prove it's in EU
   airportFact <- queryPredicate "flight_departure_airport" [flightId]
-  let airportCode = airportFact.arguments !! 1
+  let airportCode = airportFact & factOutput
   euFact <- queryPredicate "is_eu_airport" [airportCode]
   let euAirportProof = RuleApplied "eu_departure" [FactUsed airportFact, FactUsed euFact]
 
   -- Check delay > 300 minutes
   delayFact <- queryPredicate "flight_delay_minutes" [flightId]
-  let mins = getScalarNum (delayFact.arguments !! 1)
+  let mins = getScalarNum (delayFact & factOutput)
   delayCheck <- require (mins > 300) "delay_minutes > 300"
   let delayProof = RuleApplied "eu261_delay(>5h)" [FactUsed delayFact, delayCheck]
 
@@ -559,13 +559,13 @@ flexibleFareProof :: Scalar -> SolverM Proof
 flexibleFareProof bookingId = do
   -- Check fare class is flexible
   fareClassFact <- queryPredicate "booking_fare_class" [bookingId]
-  let fareClass = fareClassFact.arguments !! 1
+  let fareClass = fareClassFact & factOutput
   fareCheck <- require (fareClass == ScStr "Flexible") "fare_class == Flexible"
   let fareProof = RuleApplied "flexible_fare_class" [FactUsed fareClassFact, fareCheck]
 
   -- Check hours until departure > 24
   hoursFact <- queryPredicate "hours_until_departure" [bookingId]
-  let hours = getScalarNum (hoursFact.arguments !! 1)
+  let hours = getScalarNum (hoursFact & factOutput)
   hoursCheck <- require (hours > 24) "hours_until_departure > 24"
   let hoursProof = RuleApplied "advance_notice(>24h)" [FactUsed hoursFact, hoursCheck]
 
@@ -599,13 +599,13 @@ standardFareProof :: Scalar -> SolverM Proof
 standardFareProof bookingId = do
   -- Check fare class is standard
   fareClassFact <- queryPredicate "booking_fare_class" [bookingId]
-  let fareClass = fareClassFact.arguments !! 1
+  let fareClass = fareClassFact & factOutput
   fareCheck <- require (fareClass == ScStr "Standard") "fare_class == Standard"
   let fareProof = RuleApplied "standard_fare_class" [FactUsed fareClassFact, fareCheck]
 
   -- Check hours until departure > 72
   hoursFact <- queryPredicate "hours_until_departure" [bookingId]
-  let hours = getScalarNum (hoursFact.arguments !! 1)
+  let hours = getScalarNum (hoursFact & factOutput)
   hoursCheck <- require (hours > 72) "hours_until_departure > 72"
   let hoursProof = RuleApplied "advance_notice(>72h)" [FactUsed hoursFact, hoursCheck]
 
@@ -626,7 +626,7 @@ voucherGuard _args = do
 
   -- Check fare class is Basic
   fareClassFact <- queryPredicate "booking_fare_class" [bookingId]
-  let fareClass = fareClassFact.arguments !! 1
+  let fareClass = fareClassFact & factOutput
   fareCheck <- require (fareClass == ScStr "Basic") "fare_class == Basic"
   let fareProof = RuleApplied "basic_fare_class" [FactUsed fareClassFact, fareCheck]
 

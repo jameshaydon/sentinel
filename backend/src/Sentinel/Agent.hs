@@ -22,11 +22,11 @@ import Sentinel.Context (AskableSpec (..), ContextDecl (..), ContextStore)
 import Sentinel.LLM (Message (..))
 import Sentinel.LLM qualified as LLM
 import Sentinel.Output qualified as Output
-import Sentinel.Sentinel (EventSink (..), PendingUserInput (..), Sentinel, SentinelEnv (..), SentinelResult (..))
+import Sentinel.Sentinel (EventSink (..), InputKind (..), InputMeta (..), PendingUserInput (..), Sentinel, SentinelEnv (..), SentinelResult (..))
 import Sentinel.Sentinel qualified as Sentinel
 import Sentinel.SideSession qualified as SideSession
 import Sentinel.Solver.Askable (AskableDecl (..), formatQuestion)
-import Sentinel.Solver.Types (Scalar (..))
+import Sentinel.Solver.Types (Scalar (..), scalarToText)
 import Sentinel.Tool (SideSessionSpec (..))
 import Sentinel.Tool qualified as Tool
 import Sentinel.Toolkit (Toolkit)
@@ -228,11 +228,28 @@ runSideSession spec = do
               tools = SideSession.askableSessionTools
            in (q, p, tools)
 
+  -- Build structured InputMeta for the frontend
+  let meta = case spec of
+        ContextSession name decl ->
+          InputMeta
+            { question = question,
+              inputKind = ContextInputKind,
+              inputName = name,
+              candidates = maybe [] (map scalarToText . (.candidates)) decl.askable
+            }
+        AskableSession predName _decl _args ->
+          InputMeta
+            { question = question,
+              inputKind = AskableInputKind,
+              inputName = predName,
+              candidates = []
+            }
+
   -- 1. Print exact question to user
   emitAgentEvent (disp (Output.AskingUser question))
 
   -- 2. Get user response via the UserInput abstraction
-  userResponse <- liftIO $ env.sentinelEnv.userInput.getSideInput "> "
+  userResponse <- liftIO $ env.sentinelEnv.userInput.getSideInput meta
 
   -- 3. Call LLM with the side session prompt and tools
   verbosity <- liftIO $ Sentinel.runSentinelM env.sentinelEnv Sentinel.getVerbosity

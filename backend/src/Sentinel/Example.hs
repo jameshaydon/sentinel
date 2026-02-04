@@ -5,6 +5,7 @@
 module Sentinel.Example
   ( Example (..),
     runExample,
+    setupExample,
   )
 where
 
@@ -31,9 +32,17 @@ data Example db = Example
     initialDB :: db
   }
 
--- | Run an example with the given agent configuration and session data.
-runExample :: AgentConfig -> Example db -> SessionData -> Verbosity -> EventSink -> UserInput -> IO ()
-runExample config ex sessionData verbosityLevel sink input = do
+-- | Set up an example, returning the components needed to run it.
+--
+-- Both the console REPL and WebSocket server use this to initialize a session.
+setupExample ::
+  Example db ->
+  SessionData ->
+  Verbosity ->
+  EventSink ->
+  UserInput ->
+  IO (Text, Sentinel db, SentinelEnv db, Toolkit db)
+setupExample ex sessionData verbosityLevel sink input = do
   let sysPrompt = "Be terse and concise in your responses. This is a demo/prototype.\n\n" <> ex.toolkit.systemPrompt
       sentinel = toolkitSentinel ex.toolkit
       facts = Facts.emptyBaseFactStore
@@ -45,7 +54,13 @@ runExample config ex sessionData verbosityLevel sink input = do
   let seededCtx = getSeededContext ctxStore
   sentinelEnv.eventSink.emit (disp (Output.SessionInfo seededCtx))
 
-  repl config ex.toolkit sysPrompt sentinel sentinelEnv ex.goodbyeMessage [] 0
+  pure (sysPrompt, sentinel, sentinelEnv, ex.toolkit)
+
+-- | Run an example with the given agent configuration and session data.
+runExample :: AgentConfig -> Example db -> SessionData -> Verbosity -> EventSink -> UserInput -> IO ()
+runExample config ex sessionData verbosityLevel sink input = do
+  (sysPrompt, sentinel, sentinelEnv, toolkit) <- setupExample ex sessionData verbosityLevel sink input
+  repl config toolkit sysPrompt sentinel sentinelEnv ex.goodbyeMessage [] 0
 
 -- | Extract seeded context variables from the context store.
 -- Returns only SystemSeeded values as (slot name, value text) pairs.
