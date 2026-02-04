@@ -12,8 +12,6 @@ where
 
 import Control.Monad.State.Strict
 import Data.Aeson qualified as Aeson
-import Data.IORef (readIORef)
-import System.IO (hFlush, stdout)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as T.Encoding
 import Data.Vector qualified as V
@@ -24,7 +22,7 @@ import Sentinel.Context (AskableSpec (..), ContextDecl (..), ContextStore)
 import Sentinel.LLM (Message (..))
 import Sentinel.LLM qualified as LLM
 import Sentinel.Output qualified as Output
-import Sentinel.Sentinel (PendingUserInput (..), Sentinel, SentinelEnv (..), SentinelResult (..))
+import Sentinel.Sentinel (EventSink (..), PendingUserInput (..), Sentinel, SentinelEnv (..), SentinelResult (..))
 import Sentinel.Sentinel qualified as Sentinel
 import Sentinel.SideSession qualified as SideSession
 import Sentinel.Solver.Askable (AskableDecl (..), formatQuestion)
@@ -96,6 +94,16 @@ runAgentM env initialState action =
   runStateT (runReaderT action env) initialState
 
 --------------------------------------------------------------------------------
+-- Agent Event Emission
+--------------------------------------------------------------------------------
+
+-- | Emit a display event through the sentinel environment's 'EventSink'.
+emitAgentEvent :: Doc Ann -> AgentM db ()
+emitAgentEvent doc = do
+  env <- ask
+  liftIO $ env.sentinelEnv.eventSink.emit doc
+
+--------------------------------------------------------------------------------
 -- Context Window Management
 --------------------------------------------------------------------------------
 
@@ -112,11 +120,12 @@ callLLM :: Maybe Text -> [LLM.Tool] -> AgentM db (Either Text (Chat.Message Text
 callLLM finalInstructions llmTools = do
   env <- ask
   msgs <- use #messages
-  verbosity <- liftIO $ readIORef env.sentinelEnv.verbosity
+  verbosity <- liftIO $ Sentinel.runSentinelM env.sentinelEnv Sentinel.getVerbosity
   let trimmedMsgs = trimHistory env.config.maxMessages msgs
       -- Reverse to get chronological order for the API
       chronologicalMsgs = reverse trimmedMsgs
-  liftIO $ LLM.callChatCompletion verbosity env.config.llmConfig env.systemPrompt chronologicalMsgs llmTools finalInstructions
+      emitDebug t = env.sentinelEnv.eventSink.emit (pretty t)
+  liftIO $ LLM.callChatCompletion verbosity emitDebug env.config.llmConfig env.systemPrompt chronologicalMsgs llmTools finalInstructions
 
 --------------------------------------------------------------------------------
 -- Tool Execution (via Sentinel)
@@ -180,7 +189,7 @@ handleRegularTool callId toolName argsJson = do
   case mArgs of
     Nothing -> do
       let err = "Could not parse arguments JSON: " <> argsJson
-      liftIO $ putDispLn (Output.ToolError err)
+      emitAgentEvent (disp (Output.ToolError err))
       pure $ ToolMsg callId ("ERROR: " <> err)
     Just args -> do
       -- Call Sentinel to guard and execute the tool
@@ -220,16 +229,16 @@ runSideSession spec = do
            in (q, p, tools)
 
   -- 1. Print exact question to user
-  liftIO $ putDispLn (Output.AskingUser question)
+  emitAgentEvent (disp (Output.AskingUser question))
 
-  -- 2. Get user response via blocking stdin read
-  liftIO $ putStr "> " >> hFlush stdout
-  userResponse <- T.pack <$> liftIO getLine
+  -- 2. Get user response via the UserInput abstraction
+  userResponse <- liftIO $ env.sentinelEnv.userInput.getSideInput "> "
 
   -- 3. Call LLM with the side session prompt and tools
-  verbosity <- liftIO $ readIORef env.sentinelEnv.verbosity
+  verbosity <- liftIO $ Sentinel.runSentinelM env.sentinelEnv Sentinel.getVerbosity
   let fullPrompt = sidePrompt userResponse
-  result <- liftIO $ LLM.callChatCompletion verbosity env.config.llmConfig fullPrompt [] sideTools Nothing
+      emitDebug t = env.sentinelEnv.eventSink.emit (pretty t)
+  result <- liftIO $ LLM.callChatCompletion verbosity emitDebug env.config.llmConfig fullPrompt [] sideTools Nothing
 
   -- 4. Process result using SideSession module
   let sideResult = SideSession.processSideSessionResponse result
@@ -249,36 +258,36 @@ applySideSessionResult spec question userResponse = \case
       -- Set the context value in Sentinel
       liftIO $ Sentinel.runSentinelM env.sentinelEnv (Sentinel.setContextValue name scalar [])
       let resultText = "Set " <> name <> " = " <> dispText scalar
-      liftIO $ putDispLn (Output.SideSessionSuccess question userResponse resultText)
+      emitAgentEvent (disp (Output.SideSessionSuccess question userResponse resultText))
       pure $ formatSuccessSummary question userResponse resultText
     AskableSession {} -> do
       -- ValueSet doesn't make sense for askables, treat as ambiguous
-      liftIO $ putDispLn (Output.SideSessionAmbiguous question userResponse)
+      emitAgentEvent (disp (Output.SideSessionAmbiguous question userResponse))
       pure $ formatAmbiguousSummary question userResponse "Got value for askable (expected confirm/deny)"
   SideSession.Confirmed -> case spec of
     AskableSession predName _decl args -> do
       env <- ask
       liftIO $ Sentinel.runSentinelM env.sentinelEnv (Sentinel.setAskableFact predName args True)
       let resultText = "Confirmed: " <> predName
-      liftIO $ putDispLn (Output.SideSessionSuccess question userResponse resultText)
+      emitAgentEvent (disp (Output.SideSessionSuccess question userResponse resultText))
       pure $ formatSuccessSummary question userResponse resultText
     ContextSession {} -> do
       -- Confirmed doesn't make sense for context, treat as ambiguous
-      liftIO $ putDispLn (Output.SideSessionAmbiguous question userResponse)
+      emitAgentEvent (disp (Output.SideSessionAmbiguous question userResponse))
       pure $ formatAmbiguousSummary question userResponse "Got confirmation for context (expected value)"
   SideSession.Denied -> case spec of
     AskableSession predName _decl args -> do
       env <- ask
       liftIO $ Sentinel.runSentinelM env.sentinelEnv (Sentinel.setAskableFact predName args False)
       let resultText = "Denied: " <> predName
-      liftIO $ putDispLn (Output.SideSessionSuccess question userResponse resultText)
+      emitAgentEvent (disp (Output.SideSessionSuccess question userResponse resultText))
       pure $ formatSuccessSummary question userResponse resultText
     ContextSession {} -> do
       -- Denied doesn't make sense for context, treat as ambiguous
-      liftIO $ putDispLn (Output.SideSessionAmbiguous question userResponse)
+      emitAgentEvent (disp (Output.SideSessionAmbiguous question userResponse))
       pure $ formatAmbiguousSummary question userResponse "Got denial for context (expected value)"
   SideSession.Ambiguous reason -> do
-    liftIO $ putDispLn (Output.SideSessionAmbiguous question userResponse)
+    emitAgentEvent (disp (Output.SideSessionAmbiguous question userResponse))
     pure $ formatAmbiguousSummary question userResponse reason
 -- | Format a successful side session summary for the LLM.
 formatSuccessSummary :: Text -> Text -> Text -> Text
@@ -333,7 +342,7 @@ runAgent ::
   Text ->
   IO (Text, [Message], Int)
 runAgent config toolkit baseSystemPrompt sentinel sentinelEnv history turnCount userQuery = do
-  putDispLn (Output.TurnStart turnCount userQuery)
+  sentinelEnv.eventSink.emit (disp (Output.TurnStart turnCount userQuery))
   let newTurnCount = turnCount + 1
 
   -- Note: Context is now included in final instructions at the end of messages,
@@ -435,12 +444,12 @@ agentLoop = do
   iteration <- use #iterationCount
   if iteration > env.config.maxIterations
     then do
-      liftIO $ putDispLn (Output.IterationLimitReached env.config.maxIterations)
+      emitAgentEvent (disp (Output.IterationLimitReached env.config.maxIterations))
       let response = "I apologize, but I was unable to complete your request. Please try again or contact support."
       #messages %= (AssistantMsg (Just response) Nothing :)
       pure response
     else do
-      liftIO $ putDispLn (Output.Iteration iteration)
+      emitAgentEvent (disp (Output.Iteration iteration))
       #iterationCount += 1
 
       -- Query Sentinel directly for pending user inputs and current context
@@ -459,16 +468,16 @@ agentLoop = do
       let finalInstructions = makeFinalInstructions proofsFound ctxStore blockedCtx blockedAsk
 
       -- Log available tools before LLM call (if debug enabled)
-      verbosityLevel <- liftIO $ readIORef env.sentinelEnv.verbosity
-      when (verbosityLevel >= Basic) $ liftIO $ do
-        putStrLn $ "[DEBUG] blockedContextVars: " <> show blockedCtx
-        putStrLn $ "[DEBUG] blockedAskables: " <> show blockedAsk
-        putStrLn $ "[DEBUG] Tools available to LLM: " <> show ((.name) <$> allTools)
+      verbosityLevel <- liftIO $ Sentinel.runSentinelM env.sentinelEnv Sentinel.getVerbosity
+      when (verbosityLevel >= Basic) $ do
+        emitAgentEvent (pretty $ "[DEBUG] blockedContextVars: " <> T.pack (show blockedCtx))
+        emitAgentEvent (pretty $ "[DEBUG] blockedAskables: " <> T.pack (show blockedAsk))
+        emitAgentEvent (pretty $ "[DEBUG] Tools available to LLM: " <> T.pack (show ((.name) <$> allTools)))
 
       result <- callLLM finalInstructions openAITools
       case result of
         Left err -> do
-          liftIO $ putDispLn (Output.Error err)
+          emitAgentEvent (disp (Output.Error err))
           let response = "I encountered an error: " <> err
           #messages %= (AssistantMsg (Just response) Nothing :)
           pure response
@@ -489,7 +498,7 @@ handleResponse msg = case msg of
         agentLoop
       _ -> do
         let response = fromMaybe "" assistant_content
-        liftIO $ putDispLn (Output.FinalAnswer response)
+        emitAgentEvent (disp (Output.FinalAnswer response))
         #messages %= (AssistantMsg (Just response) Nothing :)
         -- Reset proofsFound: the LLM has presented results to the user.
         -- If the user asks to continue exploring, the next turn should use

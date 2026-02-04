@@ -26,9 +26,8 @@ module Examples.AirCanada.Tools
     -- * Action Tools
     processRefundTool,
 
-    -- * Query Tools
-    queryEligibilityTool,
-    establishContextTool,
+    -- * Queries
+    refundEligibilityQuery,
 
     -- * Askables
     airCanadaAskables,
@@ -54,11 +53,11 @@ import Pre
 import Sentinel.Context (AskableSpec (..), ContextDecl (..), ContextDecls, SeedSpec (..), declareContext, emptyContextDecls)
 import Sentinel.JSON (extractString)
 import Sentinel.Schema qualified as Schema
-import Sentinel.Sentinel (getDb, modifyDb, setContextValue)
+import Sentinel.Sentinel (getDb, modifyDb)
 import Sentinel.Solver.Askable (AskableDecl (..), AskableRegistry, EvidenceType (..), declareAskable, emptyAskableRegistry)
 import Sentinel.Solver.Combinators (SolverM, andAll, askable, contextVar, extractArg, oneOf, queryPredicate, require)
 import Sentinel.Solver.Types (BaseFact (..), Proof (..), Scalar (..), ScalarType (..))
-import Sentinel.Tool (Guard, Tool (..), ToolCategory (..), ToolGuard (..), ToolOutput (..))
+import Sentinel.Tool (Guard, Query (..), Tool (..), ToolCategory (..), ToolGuard (..), ToolOutput (..))
 import Sentinel.Toolkit (Toolkit (..))
 
 --------------------------------------------------------------------------------
@@ -73,10 +72,9 @@ airCanadaToolkit =
         [ retrieveBookingTool,
           checkFlightTool,
           searchBookingsTool,
-          processRefundTool,
-          queryEligibilityTool,
-          establishContextTool
+          processRefundTool
         ],
+      queries = [refundEligibilityQuery],
       systemPrompt = airCanadaSystemPrompt,
       toolBindings = airCanadaToolBindings,
       askables = airCanadaAskables,
@@ -243,78 +241,71 @@ processRefundTool =
     }
 
 --------------------------------------------------------------------------------
--- Query Tools
+-- Queries
 --------------------------------------------------------------------------------
 
--- | Tool for querying refund eligibility.
+-- | Query for checking refund eligibility.
 --
--- This is an informational query tool. The LLM uses it to check what
--- refund options are available before attempting to process a refund.
-queryEligibilityTool :: Tool db
-queryEligibilityTool =
-  Tool
+-- This is a first-class query: the solver evaluates the refund eligibility
+-- predicate and reports proofs/blocks directly to the LLM. Uses the same
+-- eligibility logic as 'refundGuard' but gets the booking from context.
+refundEligibilityQuery :: Query
+refundEligibilityQuery =
+  Query
     { name = "QueryRefundEligibility",
       description =
         "Check if the current booking is eligible for a refund. "
           <> "Returns available refund options (full, partial, voucher) with reasons. "
           <> "May indicate that context needs to be established (which booking?) "
-          <> "or that user confirmation is needed.",
-      params =
-        Schema.objectSchema
-          [] -- No parameters - uses booking_of_interest context
-          [],
-      category = DataTool,
-      guard = NoGuard, -- Query tools have no guard
-      execute = \_args -> do
-        -- This is a placeholder. The actual implementation requires access
-        -- to the SolverEnv which is managed at the Agent level.
-        pure
-          ToolOutput
-            { observation =
-                "QueryRefundEligibility requires solver integration. "
-                  <> "The Agent should run the eligibleForRefund rule via the solver.",
-              producedFacts = [],
-              triggerSideSession = Nothing,
-              solverOutcome = Nothing
-            }
-    }
+          <> "or that user confirmation is needed. "
+          <> "Call this repeatedly after answering blocked questions to discover more paths.",
+      params = Schema.emptyObjectSchema,
+      goal = \_args -> do
+        -- Get booking from context (blocks if not set, creating Ask_booking_of_interest)
+        bookingRef <- contextVar "booking_of_interest"
 
--- | Tool for establishing a context variable.
---
--- When the solver blocks on a context variable (e.g., @booking_of_interest@),
--- the LLM asks the user to select a value and then calls this tool to
--- establish it.
-establishContextTool :: Tool db
-establishContextTool =
-  Tool
-    { name = "EstablishContext",
-      description =
-        "Set a context variable to a specific value. "
-          <> "Use this after asking the user which booking they're asking about. "
-          <> "Example: EstablishContext(slot='booking_of_interest', value='REF123')",
-      params =
-        Schema.objectSchema
-          [ ("slot", Schema.stringProp "The context variable name (e.g., 'booking_of_interest')"),
-            ("value", Schema.stringProp "The value to set (e.g., 'REF123')")
-          ]
-          ["slot", "value"],
-      category = ActionTool, -- Context changes are actions
-      guard = NoGuard,
-      execute = \args -> do
-        slot <- extractString "slot" args ??: "Missing 'slot' parameter"
-        value <- extractString "value" args ??: "Missing 'value' parameter"
+        -- Require user identity via context
+        user <- contextVar "current_user"
+        let userProof = ContextBound "current_user" user
 
-        -- Set the context variable in the Sentinel's context store
-        let scalarValue = ScStr value
-        lift $ setContextValue slot scalarValue []
+        -- Booking must exist (auto-fetched via tool binding)
+        _ <- queryPredicate "booking_passenger" [bookingRef]
 
-        pure
-          ToolOutput
-            { observation = "Context established: " <> slot <> " = " <> value,
-              producedFacts = [],
-              triggerSideSession = Nothing,
-              solverOutcome = Nothing
-            }
+        -- Booking source must be acceptable
+        sourceProof <-
+          oneOf
+            [ do
+                fact <- queryPredicate "booking_source" [bookingRef, ScStr "DirectAirCanada"]
+                pure $ FactUsed fact,
+              do
+                fact <- queryPredicate "booking_source" [bookingRef, ScStr "GroupBooking"]
+                pure $ FactUsed fact
+            ]
+
+        -- Check eligibility through one of the refund paths
+        eligibilityProof <-
+          oneOf
+            [ do
+                proof <- airlineAtFaultProof bookingRef
+                pure $ RuleApplied "eligible_for_refund(full, airline_fault)" [proof],
+              do
+                proof <- eu261Proof bookingRef
+                pure $ RuleApplied "eligible_for_refund(full, eu261)" [proof],
+              do
+                proof <- fareAllowsFullRefundProof bookingRef
+                pure $ RuleApplied "eligible_for_refund(full, flexible_fare)" [proof],
+              do
+                proof <- fareAllowsPartialRefundProof bookingRef
+                pure $ RuleApplied "eligible_for_refund(partial, standard_fare)" [proof],
+              do
+                proof <- bereavementProof bookingRef
+                pure $ RuleApplied "eligible_for_refund(partial, bereavement)" [proof],
+              do
+                proof <- medicalBasicProof bookingRef
+                pure $ RuleApplied "eligible_for_refund(voucher, medical_basic)" [proof]
+            ]
+
+        pure $ RuleApplied "refund_eligibility" [userProof, sourceProof, eligibilityProof]
     }
 
 --------------------------------------------------------------------------------

@@ -13,6 +13,9 @@ module Sentinel.Sentinel
     -- * Sentinel Result
     SentinelResult (..),
 
+    -- * Sentinel State (unified mutable state)
+    SentinelState (..),
+
     -- * Sentinel Environment
     SentinelEnv (..),
     newSentinelEnv,
@@ -38,6 +41,7 @@ module Sentinel.Sentinel
     addPendingUserInput,
     getPendingUserInputs,
     clearPendingUserInput,
+    clearAllPendingUserInputs,
 
     -- * Database Access
     getDb,
@@ -59,17 +63,28 @@ module Sentinel.Sentinel
     -- * Verbosity / Debug
     Verbosity (..),
     setVerbosity,
+    getVerbosity,
+
+    -- * Event Emission
+    emitEvent,
+
+    -- * Re-exports from Event
+    EventSink (..),
+    UserInput (..),
+    consoleEventSink,
+    consoleUserInput,
   )
 where
 
 import Data.Aeson (Value)
-import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.Map.Strict qualified as M
 import Data.Text qualified as T
 import Data.Time (UTCTime, getCurrentTime)
 import Pre
 import Sentinel.Context (ContextDecl (..), ContextDecls (..), ContextEstablishment (..), ContextStore, EstablishmentMethod (..), SeedSpec (..), emptyContextStore)
 import Sentinel.Context qualified as Context
+import Sentinel.Event (EventSink (..), UserInput (..), consoleEventSink, consoleUserInput)
 import Sentinel.Facts (AskableFactStore, BaseFactStore, HasFactStore (..), emptyAskableFactStore)
 import Sentinel.Facts qualified as Facts
 import Sentinel.Solver.Types (Scalar (..), UserInputType (..))
@@ -148,59 +163,83 @@ data SentinelResult
   deriving stock (Show, Eq, Generic)
 
 --------------------------------------------------------------------------------
+-- Sentinel State (unified mutable state)
+--------------------------------------------------------------------------------
+
+-- | All mutable session state, kept in a single 'IORef'.
+data SentinelState db = SentinelState
+  { -- | The database (mutable for potential updates)
+    db :: db,
+    -- | The facts database (accumulated knowledge as BaseFacts)
+    facts :: BaseFactStore,
+    -- | The context store (context variables like booking_of_interest)
+    contextStore :: ContextStore,
+    -- | The askable fact store (user confirmations)
+    askableStore :: AskableFactStore,
+    -- | Pending user inputs awaiting response
+    pendingUserInputs :: [PendingUserInput],
+    -- | Whether the last solver run found any proofs (alongside blocks)
+    proofsFound :: Bool,
+    -- | Debug verbosity level (mutable for runtime adjustment)
+    verbosity :: Verbosity
+  }
+  deriving stock (Generic)
+
+--------------------------------------------------------------------------------
 -- Sentinel Environment
 --------------------------------------------------------------------------------
 
--- | The Sentinel's environment, containing mutable state.
+-- | The Sentinel's environment.
+--
+-- Contains a single 'IORef' to the unified 'SentinelState', plus I/O
+-- abstractions for display events and user input.
 --
 -- Parameterized over @db@: The database type (e.g., AirlineDB).
--- Facts are stored as 'BaseFact' in a 'BaseFactStore'.
 data SentinelEnv db = SentinelEnv
-  { -- | The database (mutable for potential updates)
-    db :: IORef db,
-    -- | The facts database (accumulated knowledge as BaseFacts)
-    facts :: IORef BaseFactStore,
-    -- | The context store (context variables like booking_of_interest)
-    contextStore :: IORef ContextStore,
-    -- | The askable fact store (user confirmations)
-    askableStore :: IORef AskableFactStore,
-    -- | Pending user inputs awaiting response
-    pendingUserInputs :: IORef [PendingUserInput],
-    -- | Whether the last solver run found any proofs (alongside blocks)
-    proofsFound :: IORef Bool,
-    -- | Debug verbosity level (mutable for runtime adjustment)
-    verbosity :: IORef Verbosity
+  { -- | Single mutable state reference
+    stateRef :: IORef (SentinelState db),
+    -- | Output channel for display events
+    eventSink :: EventSink,
+    -- | Channel for side-session user input
+    userInput :: UserInput
   }
-  deriving stock (Generic)
 
 -- | Create a new Sentinel environment with initial database, facts, and session data.
 --
 -- The 'SessionData' and 'ContextDecls' are used to pre-seed context variables.
 -- For each context declaration with a 'FromSession' seed spec, if the corresponding
 -- session field is present, the context variable is pre-populated.
-newSentinelEnv :: db -> BaseFactStore -> SessionData -> ContextDecls -> Verbosity -> IO (SentinelEnv db)
-newSentinelEnv initialDb initialFacts sessionData contextDecls initialVerbosity = do
-  dbRef <- newIORef initialDb
-  factsRef <- newIORef initialFacts
-  askableRef <- newIORef emptyAskableFactStore
-  pendingUserInputsRef <- newIORef []
-  proofsFoundRef <- newIORef False
-  verbosityRef <- newIORef initialVerbosity
-
+newSentinelEnv ::
+  db ->
+  BaseFactStore ->
+  SessionData ->
+  ContextDecls ->
+  Verbosity ->
+  EventSink ->
+  UserInput ->
+  IO (SentinelEnv db)
+newSentinelEnv initialDb initialFacts sessionData contextDecls initialVerbosity sink input = do
   -- Seed context from session data
   now <- getCurrentTime
   let seededContext = seedContextFromSession sessionData contextDecls now
-  contextRef <- newIORef seededContext
+      initialState =
+        SentinelState
+          { db = initialDb,
+            facts = initialFacts,
+            contextStore = seededContext,
+            askableStore = emptyAskableFactStore,
+            pendingUserInputs = [],
+            proofsFound = False,
+            verbosity = initialVerbosity
+          }
+
+  ref <- newIORef initialState
 
   pure
     SentinelEnv
-      { db = dbRef,
-        facts = factsRef,
-        contextStore = contextRef,
-        askableStore = askableRef,
-        pendingUserInputs = pendingUserInputsRef,
-        proofsFound = proofsFoundRef,
-        verbosity = verbosityRef
+      { stateRef = ref,
+        eventSink = sink,
+        userInput = input
       }
 
 -- | Seed context variables from session data based on context declarations.
@@ -239,8 +278,9 @@ seedContextFromSession sessionData (ContextDecls decls) timestamp =
 -- | The Sentinel monad.
 --
 -- This is the context in which Sentinel operations run. It has access to:
--- - The database (via IORef)
--- - The facts database (via IORef)
+-- - The unified state (via IORef)
+-- - The event sink (for display output)
+-- - The user input channel (for side sessions)
 -- - IO for executing tools
 type SentinelM db = ReaderT (SentinelEnv db) IO
 
@@ -279,19 +319,29 @@ data Sentinel db = Sentinel
   }
 
 --------------------------------------------------------------------------------
+-- Event Emission
+--------------------------------------------------------------------------------
+
+-- | Emit a display event through the environment's 'EventSink'.
+emitEvent :: Doc Ann -> SentinelM db ()
+emitEvent doc = do
+  sink <- asks (.eventSink)
+  liftIO $ sink.emit doc
+
+--------------------------------------------------------------------------------
 -- Fact Operations (HasFactStore instance)
 --------------------------------------------------------------------------------
 
 instance HasFactStore (SentinelM db) where
   addFact fact = do
-    factsRef <- asks (.facts)
-    liftIO $ modifyIORef' factsRef (Facts.addBaseFact fact)
+    ref <- asks (.stateRef)
+    liftIO $ modifyIORef' ref (over #facts (Facts.addBaseFact fact))
   addFacts newFacts = do
-    factsRef <- asks (.facts)
-    liftIO $ modifyIORef' factsRef (Facts.addBaseFacts newFacts)
+    ref <- asks (.stateRef)
+    liftIO $ modifyIORef' ref (over #facts (Facts.addBaseFacts newFacts))
   getFactStore = do
-    factsRef <- asks (.facts)
-    liftIO $ readIORef factsRef
+    ref <- asks (.stateRef)
+    liftIO $ (.facts) <$> readIORef ref
 
 --------------------------------------------------------------------------------
 -- Database Access
@@ -300,14 +350,14 @@ instance HasFactStore (SentinelM db) where
 -- | Get the current database state.
 getDb :: SentinelM db db
 getDb = do
-  dbRef <- asks (.db)
-  liftIO $ readIORef dbRef
+  ref <- asks (.stateRef)
+  liftIO $ (.db) <$> readIORef ref
 
 -- | Modify the database state.
 modifyDb :: (db -> db) -> SentinelM db ()
 modifyDb f = do
-  dbRef <- asks (.db)
-  liftIO $ modifyIORef' dbRef f
+  ref <- asks (.stateRef)
+  liftIO $ modifyIORef' ref (over #db f)
 
 --------------------------------------------------------------------------------
 -- Context Operations
@@ -316,7 +366,7 @@ modifyDb f = do
 -- | Set a context variable with a value (from user selection).
 setContextValue :: Text -> Scalar -> [Scalar] -> SentinelM db ()
 setContextValue slot value candidates = do
-  ctxRef <- asks (.contextStore)
+  ref <- asks (.stateRef)
   timestamp <- liftIO getCurrentTime
   let establishment =
         ContextEstablishment
@@ -324,13 +374,13 @@ setContextValue slot value candidates = do
             establishedVia = UserSelection candidates,
             timestamp = timestamp
           }
-  liftIO $ modifyIORef' ctxRef (Context.setContext slot establishment)
+  liftIO $ modifyIORef' ref (over #contextStore (Context.setContext slot establishment))
 
 -- | Get the entire context store (for solver).
 getContextStore :: SentinelM db ContextStore
 getContextStore = do
-  ctxRef <- asks (.contextStore)
-  liftIO $ readIORef ctxRef
+  ref <- asks (.stateRef)
+  liftIO $ (.contextStore) <$> readIORef ref
 
 -- | Format context for inclusion in LLM messages.
 --
@@ -367,14 +417,14 @@ formatContextForLLM store =
 -- | Record a user confirmation for an askable predicate.
 setAskableFact :: Text -> [Scalar] -> Bool -> SentinelM db ()
 setAskableFact predName args confirmed = do
-  askRef <- asks (.askableStore)
-  liftIO $ modifyIORef' askRef (Facts.addAskableFact predName args confirmed)
+  ref <- asks (.stateRef)
+  liftIO $ modifyIORef' ref (over #askableStore (Facts.addAskableFact predName args confirmed))
 
 -- | Get the entire askable fact store (for solver).
 getAskableStore :: SentinelM db AskableFactStore
 getAskableStore = do
-  askRef <- asks (.askableStore)
-  liftIO $ readIORef askRef
+  ref <- asks (.stateRef)
+  liftIO $ (.askableStore) <$> readIORef ref
 
 --------------------------------------------------------------------------------
 -- Pending User Input Operations (unified)
@@ -383,7 +433,7 @@ getAskableStore = do
 -- | Add a pending user input awaiting response.
 addPendingUserInput :: UserInputType -> Text -> [Scalar] -> Text -> [Scalar] -> SentinelM db ()
 addPendingUserInput inputType inputName args questionText inputCandidates = do
-  pendingRef <- asks (.pendingUserInputs)
+  ref <- asks (.stateRef)
   let info =
         PendingUserInput
           { pendingType = inputType,
@@ -393,7 +443,7 @@ addPendingUserInput inputType inputName args questionText inputCandidates = do
             pendingCandidates = inputCandidates
           }
   -- Only add if not already pending (prevent duplicates)
-  liftIO $ modifyIORef' pendingRef $ \existing ->
+  liftIO $ modifyIORef' ref $ over #pendingUserInputs $ \existing ->
     if any (\p -> p.pendingType == inputType && p.pendingName == inputName && p.pendingArguments == args) existing
       then existing
       else info : existing
@@ -401,14 +451,20 @@ addPendingUserInput inputType inputName args questionText inputCandidates = do
 -- | Get all pending user inputs.
 getPendingUserInputs :: SentinelM db [PendingUserInput]
 getPendingUserInputs = do
-  pendingRef <- asks (.pendingUserInputs)
-  liftIO $ readIORef pendingRef
+  ref <- asks (.stateRef)
+  liftIO $ (.pendingUserInputs) <$> readIORef ref
 
 -- | Clear a pending user input by name (after it's been resolved).
 clearPendingUserInput :: Text -> SentinelM db ()
 clearPendingUserInput name = do
-  pendingRef <- asks (.pendingUserInputs)
-  liftIO $ modifyIORef' pendingRef (filter (\p -> p.pendingName /= name))
+  ref <- asks (.stateRef)
+  liftIO $ modifyIORef' ref (over #pendingUserInputs (filter (\p -> p.pendingName /= name)))
+
+-- | Clear all pending user inputs (used before a query to get a fresh picture).
+clearAllPendingUserInputs :: SentinelM db ()
+clearAllPendingUserInputs = do
+  ref <- asks (.stateRef)
+  liftIO $ modifyIORef' ref (set #pendingUserInputs [])
 
 -- | Find a pending context variable by name.
 findPendingContext :: Text -> SentinelM db (Maybe PendingUserInput)
@@ -441,14 +497,14 @@ getPendingAskables = do
 -- | Set whether the last solver run found proofs.
 setProofsFound :: Bool -> SentinelM db ()
 setProofsFound found = do
-  ref <- asks (.proofsFound)
-  liftIO $ writeIORef ref found
+  ref <- asks (.stateRef)
+  liftIO $ modifyIORef' ref (set #proofsFound found)
 
 -- | Get whether the last solver run found proofs.
 getProofsFound :: SentinelM db Bool
 getProofsFound = do
-  ref <- asks (.proofsFound)
-  liftIO $ readIORef ref
+  ref <- asks (.stateRef)
+  liftIO $ (.proofsFound) <$> readIORef ref
 
 --------------------------------------------------------------------------------
 -- Verbosity / Debug Operations
@@ -457,5 +513,11 @@ getProofsFound = do
 -- | Set the verbosity level.
 setVerbosity :: Verbosity -> SentinelM db ()
 setVerbosity level = do
-  verbRef <- asks (.verbosity)
-  liftIO $ writeIORef verbRef level
+  ref <- asks (.stateRef)
+  liftIO $ modifyIORef' ref (set #verbosity level)
+
+-- | Get the verbosity level.
+getVerbosity :: SentinelM db Verbosity
+getVerbosity = do
+  ref <- asks (.stateRef)
+  liftIO $ (.verbosity) <$> readIORef ref

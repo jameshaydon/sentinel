@@ -50,7 +50,7 @@ import Sentinel.Sentinel (getContextStore, getDb)
 import Sentinel.Solver.Askable (AskableDecl (..), AskableRegistry, EvidenceType (..), declareAskable, emptyAskableRegistry)
 import Sentinel.Solver.Combinators (SolverM, askable, contextVar, oneOf, queryPredicate, require)
 import Sentinel.Solver.Types (BaseFact (..), Proof (..), Scalar (..), ScalarType (..), scalarToText)
-import Sentinel.Tool (Guard, Tool (..), ToolCategory (..), ToolGuard (..), ToolOutput (..))
+import Sentinel.Tool (Guard, Query (..), Tool (..), ToolCategory (..), ToolGuard (..), ToolOutput (..))
 import Sentinel.Toolkit (Toolkit (..))
 
 --------------------------------------------------------------------------------
@@ -72,6 +72,7 @@ airLogicToolkit =
           issuePartialRefundTool,
           issueVoucherTool
         ],
+      queries = [refundEligibilityQuery],
       systemPrompt = airLogicSystemPrompt,
       toolBindings = airLogicToolBindings,
       askables = airLogicAskables,
@@ -89,16 +90,17 @@ airLogicSystemPrompt =
     [ "You are a helpful customer service agent for AirLogic Airlines.",
       "You help customers with flight information, booking inquiries, and refund requests.",
       "",
-      "REFUND POLICY SUMMARY:",
-      "1. Airline-Caused Disruptions: Full refund if flight cancelled or delay > 3 hours",
-      "2. EU261 Protection: Full refund if EU departure and delay > 5 hours",
-      "3. Flexible Fare: Full refund if requested > 24 hours before departure",
-      "4. Standard Fare: Partial refund (minus $150 fee) if requested > 72 hours before departure",
-      "5. Basic Economy: No cash refund, but credit voucher with medical documentation",
-      "6. Bereavement: Partial refund with death certificate of immediate family member",
-      "",
-      "IMPORTANT INSTRUCTIONS:",
-      "- Check refund eligibility through all possible paths before processing"
+      "CRITICAL RULES:",
+      "- You MUST use the QueryRefundEligibility tool before making ANY statements about",
+      "  whether a customer is or is not eligible for a refund, voucher, or compensation.",
+      "- NEVER determine refund eligibility yourself from raw flight or booking data.",
+      "  The eligibility rules are complex and encoded in the system's solver. Only the",
+      "  QueryRefundEligibility result is authoritative.",
+      "- After calling QueryRefundEligibility, faithfully report what the solver found:",
+      "  which paths succeeded, which are blocked (and what would unblock them), and",
+      "  which failed.",
+      "- You may freely use data tools (GetFlightDetails, GetBooking, etc.) to answer",
+      "  general informational questions that are not about refund eligibility."
     ]
 
 --------------------------------------------------------------------------------
@@ -403,6 +405,71 @@ issueVoucherTool =
                   solverOutcome = Nothing
                 }
     }
+
+--------------------------------------------------------------------------------
+-- Queries
+--------------------------------------------------------------------------------
+
+-- | Query for checking refund eligibility across all paths.
+--
+-- This is a first-class query: the solver evaluates all refund eligibility
+-- paths (full, partial, voucher) and reports proofs/blocks directly to the LLM.
+-- Uses the same eligibility logic as the guards on the action tools but gets
+-- the booking from context.
+refundEligibilityQuery :: Query
+refundEligibilityQuery =
+  Query
+    { name = "QueryRefundEligibility",
+      description =
+        "Check if the current booking is eligible for a refund. "
+          <> "Returns available refund options (full, partial, voucher) with reasons. "
+          <> "May indicate that context needs to be established (which booking?) "
+          <> "or that user confirmation is needed. "
+          <> "Call this repeatedly after answering blocked questions to discover more paths.",
+      params = Schema.emptyObjectSchema,
+      goal = \_args -> do
+        bookingId <- contextVar "booking_of_interest"
+        user <- contextVar "current_user"
+
+        -- Check eligibility through all refund paths
+        eligibilityProof <-
+          oneOf
+            [ do
+                proof <- airlineFaultProof bookingId
+                pure $ RuleApplied "eligible_for_refund(full, airline_fault)" [proof],
+              do
+                proof <- eu261Proof bookingId
+                pure $ RuleApplied "eligible_for_refund(full, eu261)" [proof],
+              do
+                proof <- flexibleFareProof bookingId
+                pure $ RuleApplied "eligible_for_refund(full, flexible_fare)" [proof],
+              do
+                proof <- standardFareProof bookingId
+                pure $ RuleApplied "eligible_for_refund(partial, standard_fare)" [proof],
+              do
+                proof <- bereavementProof user
+                pure $ RuleApplied "eligible_for_refund(partial, bereavement)" [proof],
+              do
+                proof <- voucherEligibilityProof bookingId user
+                pure $ RuleApplied "eligible_for_refund(voucher, medical_basic)" [proof]
+            ]
+
+        pure $ RuleApplied "refund_eligibility" [ContextBound "current_user" user, eligibilityProof]
+    }
+
+-- | Prove voucher eligibility: Basic Economy with medical documentation.
+voucherEligibilityProof :: Scalar -> Scalar -> SolverM Proof
+voucherEligibilityProof bookingId user = do
+  fareClassFact <- queryPredicate "booking_fare_class" [bookingId]
+  let fareClass = fareClassFact.arguments !! 1
+  fareCheck <- require (fareClass == ScStr "Basic") "fare_class == Basic"
+  let fareProof = RuleApplied "basic_fare_class" [FactUsed fareClassFact, fareCheck]
+
+  medicalProof <- askable "user_claims_medical_emergency" [user]
+  docProof <- askable "user_confirms_upload_documentation" [user, ScStr "medical_certificate"]
+  termsProof <- askable "user_accepts_voucher_terms" [user]
+
+  pure $ RuleApplied "voucher_eligible" [fareProof, medicalProof, docProof, termsProof]
 
 --------------------------------------------------------------------------------
 -- Guards

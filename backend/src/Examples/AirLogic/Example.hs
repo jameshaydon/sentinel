@@ -8,8 +8,6 @@ import Examples.AirLogic.MockDB (initialDB)
 import Examples.AirLogic.Tools (airLogicToolkit)
 import Examples.AirLogic.Types (AirLogicDB)
 import Sentinel.Example (Example (..))
-import Sentinel.Toolkit (withVerification)
-
 -- | The AirLogic Airlines example.
 airLogicExample :: Example AirLogicDB
 airLogicExample =
@@ -23,6 +21,6 @@ airLogicExample =
           "Find my bookings, my user ID is usr_sarah_chen"
         ],
       goodbyeMessage = "Thank you for using AirLogic Airlines. Goodbye!",
-      toolkit = withVerification airLogicToolkit,
+      toolkit = airLogicToolkit,
       initialDB = initialDB
     }

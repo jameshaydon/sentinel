@@ -27,6 +27,10 @@ module Sentinel.Tool
     -- * Tool Definition
     Tool (..),
 
+    -- * Query Definition
+    Query (..),
+    queryToLLMTool,
+
     -- * LLM Tool Metadata
     LLMTool (..),
     toLLMTool,
@@ -140,6 +144,35 @@ data Tool db = Tool
     -- | Execution function (returns observation + produced facts)
     execute :: Value -> ExceptT Text (SentinelM db) ToolOutput
   }
+
+--------------------------------------------------------------------------------
+-- Query Definition
+--------------------------------------------------------------------------------
+
+-- | A first-class query: runs the solver to evaluate a predicate and reports
+-- the results (proofs + blocks) directly to the LLM. Unlike a guard, a query
+-- does not gate tool execution — it just reports what the solver finds.
+--
+-- Not parameterized by @db@ because the goal is pure solver logic.
+data Query = Query
+  { -- | Query name (used for lookup and LLM tool calling)
+    name :: Text,
+    -- | Description for the LLM
+    description :: Text,
+    -- | JSON Schema for input parameters
+    params :: Value,
+    -- | The solver goal to evaluate
+    goal :: Guard -- Value -> SolverM Proof
+  }
+
+-- | Convert a Query to LLM-facing tool metadata.
+queryToLLMTool :: Query -> LLMTool
+queryToLLMTool query =
+  LLMTool
+    { name = query.name,
+      description = query.description,
+      params = query.params
+    }
 
 --------------------------------------------------------------------------------
 -- LLM Tool Metadata
