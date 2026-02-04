@@ -16,6 +16,7 @@ import Sentinel.Agent (AgentConfig (..), Message, runAgent)
 import Sentinel.Context (ContextEstablishment (..), ContextStore (..), EstablishmentMethod (..))
 import Sentinel.Facts qualified as Facts
 import Sentinel.Output qualified as Output
+import Sentinel.Facts (BaseFactStore)
 import Sentinel.Sentinel (EventSink (..), Sentinel, SentinelEnv (..), SessionData, UserInput, Verbosity (..), getContextStore, newSentinelEnv, runSentinelM, setVerbosity)
 import Sentinel.Solver.Types (scalarToText)
 import Sentinel.Toolkit (Toolkit (..), toolkitSentinel)
@@ -41,13 +42,14 @@ setupExample ::
   Verbosity ->
   EventSink ->
   UserInput ->
+  (BaseFactStore -> IO ()) ->
   IO (Text, Sentinel db, SentinelEnv db, Toolkit db)
-setupExample ex sessionData verbosityLevel sink input = do
+setupExample ex sessionData verbosityLevel sink input factSink = do
   let sysPrompt = "Be terse and concise in your responses. This is a demo/prototype.\n\n" <> ex.toolkit.systemPrompt
       sentinel = toolkitSentinel ex.toolkit
       facts = Facts.emptyBaseFactStore
 
-  sentinelEnv <- newSentinelEnv ex.initialDB facts sessionData ex.toolkit.contextDecls verbosityLevel sink input
+  sentinelEnv <- newSentinelEnv ex.initialDB facts sessionData ex.toolkit.contextDecls verbosityLevel sink input factSink
 
   -- Display seeded context
   ctxStore <- runSentinelM sentinelEnv getContextStore
@@ -59,7 +61,7 @@ setupExample ex sessionData verbosityLevel sink input = do
 -- | Run an example with the given agent configuration and session data.
 runExample :: AgentConfig -> Example db -> SessionData -> Verbosity -> EventSink -> UserInput -> IO ()
 runExample config ex sessionData verbosityLevel sink input = do
-  (sysPrompt, sentinel, sentinelEnv, toolkit) <- setupExample ex sessionData verbosityLevel sink input
+  (sysPrompt, sentinel, sentinelEnv, toolkit) <- setupExample ex sessionData verbosityLevel sink input (const (pure ()))
   repl config toolkit sysPrompt sentinel sentinelEnv ex.goodbyeMessage [] 0
 
 -- | Extract seeded context variables from the context store.

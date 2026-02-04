@@ -36,7 +36,7 @@
 -- -- Define a rule
 -- eligibleForRefund :: SolverM SolverSuccess
 -- eligibleForRefund = do
---   booking <- contextVar "booking_of_interest"
+--   booking <- contextVar "booking_of_interest" Nothing
 --   withRule "airline_fault" $ withReason "airline_fault" $ do
 --     flight <- queryPredicate "booking_flight" [booking]
 --     status <- queryPredicate "flight_status" [flight.arguments !! 1]

@@ -262,10 +262,10 @@ refundEligibilityQuery =
       params = Schema.emptyObjectSchema,
       goal = \_args -> do
         -- Get booking from context (blocks if not set, creating Ask_booking_of_interest)
-        bookingRef <- contextVar "booking_of_interest"
+        bookingRef <- contextVar "booking_of_interest" Nothing
 
         -- Require user identity via context
-        user <- contextVar "current_user"
+        user <- contextVar "current_user" Nothing
         let userProof = ContextBound "current_user" user
 
         -- Booking must exist (auto-fetched via tool binding)
@@ -287,25 +287,25 @@ refundEligibilityQuery =
           oneOf
             [ do
                 proof <- airlineAtFaultProof bookingRef
-                pure $ RuleApplied "eligible_for_refund(full, airline_fault)" [proof],
+                pure $ RuleApplied "eligible_for_refund" [ScStr "full", ScStr "airline_fault"] [proof],
               do
                 proof <- eu261Proof bookingRef
-                pure $ RuleApplied "eligible_for_refund(full, eu261)" [proof],
+                pure $ RuleApplied "eligible_for_refund" [ScStr "full", ScStr "eu261"] [proof],
               do
                 proof <- fareAllowsFullRefundProof bookingRef
-                pure $ RuleApplied "eligible_for_refund(full, flexible_fare)" [proof],
+                pure $ RuleApplied "eligible_for_refund" [ScStr "full", ScStr "flexible_fare"] [proof],
               do
                 proof <- fareAllowsPartialRefundProof bookingRef
-                pure $ RuleApplied "eligible_for_refund(partial, standard_fare)" [proof],
+                pure $ RuleApplied "eligible_for_refund" [ScStr "partial", ScStr "standard_fare"] [proof],
               do
                 proof <- bereavementProof bookingRef
-                pure $ RuleApplied "eligible_for_refund(partial, bereavement)" [proof],
+                pure $ RuleApplied "eligible_for_refund" [ScStr "partial", ScStr "bereavement"] [proof],
               do
                 proof <- medicalBasicProof bookingRef
-                pure $ RuleApplied "eligible_for_refund(voucher, medical_basic)" [proof]
+                pure $ RuleApplied "eligible_for_refund" [ScStr "voucher", ScStr "medical_basic"] [proof]
             ]
 
-        pure $ RuleApplied "refund_eligibility" [userProof, sourceProof, eligibilityProof]
+        pure $ RuleApplied "refund_eligibility" [] [userProof, sourceProof, eligibilityProof]
     }
 
 --------------------------------------------------------------------------------
@@ -317,7 +317,7 @@ refundEligibilityQuery =
 -- Uses the "current_user" context variable to verify user is authenticated.
 userIdentityGuard :: Guard
 userIdentityGuard _args = do
-  user <- contextVar "current_user"
+  user <- contextVar "current_user" Nothing
   pure $ ContextBound "current_user" user
 
 -- | Guard for SearchBookingsByName - requires identity AND name must match current user.
@@ -328,9 +328,9 @@ userIdentityGuard _args = do
 searchBookingsGuard :: Guard
 searchBookingsGuard args = do
   name <- extractArg "passengerName" args
-  user <- contextVar "current_user"
+  user <- contextVar "current_user" Nothing
   proof <- require (name == user) "passengerName matches current_user"
-  pure $ RuleApplied "search_bookings_authorized" [ContextBound "current_user" user, proof]
+  pure $ RuleApplied "search_bookings_authorized" [] [ContextBound "current_user" user, proof]
 
 -- | Guard for refund tool with sophisticated proof-building.
 --
@@ -343,7 +343,7 @@ refundGuard args = do
   bookingRef <- extractArg "bookingRef" args
 
   -- Require user identity via context
-  user <- contextVar "current_user"
+  user <- contextVar "current_user" Nothing
 
   -- Booking must exist (auto-fetched via tool binding)
   _ <- queryPredicate "booking_passenger" [bookingRef]
@@ -365,25 +365,25 @@ refundGuard args = do
     oneOf
       [ do
           proof <- airlineAtFaultProof bookingRef
-          pure $ RuleApplied "eligible_for_refund(full, airline_fault)" [proof],
+          pure $ RuleApplied "eligible_for_refund" [ScStr "full", ScStr "airline_fault"] [proof],
         do
           proof <- eu261Proof bookingRef
-          pure $ RuleApplied "eligible_for_refund(full, eu261)" [proof],
+          pure $ RuleApplied "eligible_for_refund" [ScStr "full", ScStr "eu261"] [proof],
         do
           proof <- fareAllowsFullRefundProof bookingRef
-          pure $ RuleApplied "eligible_for_refund(full, flexible_fare)" [proof],
+          pure $ RuleApplied "eligible_for_refund" [ScStr "full", ScStr "flexible_fare"] [proof],
         do
           proof <- fareAllowsPartialRefundProof bookingRef
-          pure $ RuleApplied "eligible_for_refund(partial, standard_fare)" [proof],
+          pure $ RuleApplied "eligible_for_refund" [ScStr "partial", ScStr "standard_fare"] [proof],
         do
           proof <- bereavementProof bookingRef
-          pure $ RuleApplied "eligible_for_refund(partial, bereavement)" [proof],
+          pure $ RuleApplied "eligible_for_refund" [ScStr "partial", ScStr "bereavement"] [proof],
         do
           proof <- medicalBasicProof bookingRef
-          pure $ RuleApplied "eligible_for_refund(voucher, medical_basic)" [proof]
+          pure $ RuleApplied "eligible_for_refund" [ScStr "voucher", ScStr "medical_basic"] [proof]
       ]
 
-  pure $ RuleApplied "refund_eligibility" [userProof, sourceProof, eligibilityProof]
+  pure $ RuleApplied "refund_eligibility" [] [userProof, sourceProof, eligibilityProof]
 
 --------------------------------------------------------------------------------
 -- Proof Builders (from Rules.hs)
@@ -421,7 +421,7 @@ airlineAtFaultProof booking =
           andAll
             [require (status == ScStr "Cancelled") "flight is cancelled"]
 
-        pure $ RuleApplied "flight_cancelled" [FactUsed flightFact, FactUsed statusFact, cancelledProof],
+        pure $ RuleApplied "flight_cancelled" [] [FactUsed flightFact, FactUsed statusFact, cancelledProof],
       -- Flight is delayed
       do
         flightFact <- queryPredicate "booking_flight" [booking]
@@ -434,7 +434,7 @@ airlineAtFaultProof booking =
           andAll
             [require (status == ScStr "Delayed") "flight is delayed"]
 
-        pure $ RuleApplied "flight_delayed" [FactUsed flightFact, FactUsed statusFact, delayedProof]
+        pure $ RuleApplied "flight_delayed" [] [FactUsed flightFact, FactUsed statusFact, delayedProof]
     ]
 
 -- | Prove eu261_eligible(B): EU departure airport and significant delay/cancellation.
@@ -465,7 +465,7 @@ eu261Proof booking = do
           "flight is cancelled or delayed"
       ]
 
-  pure $ RuleApplied "eu261_eligible" [FactUsed flightFact, FactUsed originFact, FactUsed statusFact, proofs]
+  pure $ RuleApplied "eu261_eligible" [] [FactUsed flightFact, FactUsed originFact, FactUsed statusFact, proofs]
   where
     -- Simplified EU airport check
     isEuAirport :: Scalar -> Bool
@@ -501,7 +501,7 @@ fareAllowsFullRefundProof booking = do
     andAll
       [require classMatches "fare class is flexible (Business/First)"]
 
-  pure $ RuleApplied "fare_allows_refund(full)" [FactUsed fareClassFact, proof]
+  pure $ RuleApplied "fare_allows_refund" [ScStr "full"] [FactUsed fareClassFact, proof]
 
 -- | Prove fare_allows_refund(B, partial): fare class is Standard/Economy.
 fareAllowsPartialRefundProof :: Scalar -> SolverM Proof
@@ -520,7 +520,7 @@ fareAllowsPartialRefundProof booking = do
     andAll
       [require classMatches "fare class is standard (Economy/PremiumEconomy)"]
 
-  pure $ RuleApplied "fare_allows_refund(partial)" [FactUsed fareClassFact, proof]
+  pure $ RuleApplied "fare_allows_refund" [ScStr "partial"] [FactUsed fareClassFact, proof]
 
 -- | Prove bereavement_eligible(B): user claims bereavement with documentation.
 --
@@ -530,7 +530,7 @@ fareAllowsPartialRefundProof booking = do
 bereavementProof :: Scalar -> SolverM Proof
 bereavementProof _booking = do
   -- Get current user from context
-  user <- contextVar "current_user"
+  user <- contextVar "current_user" Nothing
 
   proofs <-
     andAll
@@ -540,7 +540,7 @@ bereavementProof _booking = do
         askable "user_confirms_documentation" [user, ScStr "death_certificate"]
       ]
 
-  pure $ RuleApplied "bereavement_eligible" [proofs]
+  pure $ RuleApplied "bereavement_eligible" [] [proofs]
 
 -- | Prove medical_basic_eligible(B): Basic Economy with medical emergency.
 --
@@ -549,7 +549,7 @@ bereavementProof _booking = do
 medicalBasicProof :: Scalar -> SolverM Proof
 medicalBasicProof booking = do
   -- Get current user from context
-  user <- contextVar "current_user"
+  user <- contextVar "current_user" Nothing
 
   -- Check ticket type is Basic Economy
   ticketTypeFact <- queryPredicate "booking_ticket_type" [booking]
@@ -565,7 +565,7 @@ medicalBasicProof booking = do
         askable "user_confirms_documentation" [user, ScStr "medical_certificate"]
       ]
 
-  pure $ RuleApplied "medical_basic_eligible" [FactUsed ticketTypeFact, proofs]
+  pure $ RuleApplied "medical_basic_eligible" [] [FactUsed ticketTypeFact, proofs]
 
 --------------------------------------------------------------------------------
 -- Askable Declarations

@@ -70,7 +70,7 @@ data ToolCategory
 -- uses only the Set/Confirm/Deny tools appropriate to the type.
 data SideSessionSpec
   = -- | Side session for establishing a context variable value
-    ContextSession Text ContextDecl -- (name, decl)
+    ContextSession Text ContextDecl [Scalar] -- (name, decl, candidates)
   | -- | Side session for confirming/denying an askable fact
     AskableSession Text AskableDecl [Scalar] -- (name, decl, args)
   deriving stock (Show, Eq, Generic)

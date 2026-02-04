@@ -1,4 +1,5 @@
 import type {
+	BaseFactStore,
 	ChatMessage,
 	ClientMessage,
 	ConnectionStatus,
@@ -18,6 +19,7 @@ class SentinelConnection {
 	connectionStatus: ConnectionStatus = $state('disconnected');
 	inputRequest: InputMeta | null = $state(null);
 	isWaitingForResponse: boolean = $state(false);
+	factStore: BaseFactStore | null = $state(null);
 
 	private ws: WebSocket | null = null;
 
@@ -132,6 +134,10 @@ class SentinelConnection {
 					isError: true
 				});
 				this.isWaitingForResponse = false;
+				break;
+
+			case 'FactStoreUpdate':
+				this.factStore = msg.contents;
 				break;
 		}
 	}

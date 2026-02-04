@@ -272,12 +272,12 @@ evaluateToolGuard toolkit tool args = do
       let noGuardSuccess =
             SolverSuccess
               { bindings = M.empty,
-                proof = RuleApplied "no_guard" [],
+                proof = RuleApplied "no_guard" [] [],
                 reason = "no_guard"
               }
        in pure (ToolGuardPassed (noGuardSuccess :| []), Nothing)
     SolverGuardT guardName guardFn -> do
-      let solverAction guardArgs = withRule guardName $ do
+      let solverAction guardArgs = withRule guardName [] $ do
             proof <- guardFn guardArgs
             pure
               SolverSuccess
@@ -317,7 +317,7 @@ executeQuery toolkit query args = do
   -- Clear old pending inputs — query gives a fresh complete picture
   clearAllPendingUserInputs
 
-  let solverAction queryArgs = withRule query.name $ do
+  let solverAction queryArgs = withRule query.name [] $ do
         proof <- query.goal queryArgs
         pure
           SolverSuccess

@@ -33,12 +33,12 @@
 	<!-- Main content -->
 	<div class="flex min-h-0 flex-1">
 		<!-- Debug pane (hidden on mobile) -->
-		<div class="hidden w-2/5 border-r border-gray-200 md:block">
+		<div class="hidden w-1/2 border-r border-gray-200 md:block">
 			<DebugPane />
 		</div>
 
 		<!-- Chat pane -->
-		<div class="min-w-0 flex-1">
+		<div class="w-1/2 min-w-0 flex-1 md:flex-none">
 			<ChatPane />
 		</div>
 	</div>
