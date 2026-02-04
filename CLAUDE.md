@@ -25,7 +25,8 @@ cabal run repl -- --help  # Show CLI options
 
 ### Core Logic (start here for semantic changes)
 - `Solver/` — Proof search, backtracking, the heart of the system
-- `Sentinel.hs` — Core types & middleware
+- `Event.hs` — `EventSink` / `UserInput` I/O abstractions
+- `Sentinel.hs` — Unified state (`SentinelState`), `SentinelEnv`, core accessors
 - `Tool.hs` — Tool, Guard, ToolGuard types
 - `Toolkit.hs` — Toolkit builder & guard evaluation
 - `Facts.hs` — Fact store infrastructure
@@ -43,7 +44,7 @@ cabal run repl -- --help  # Show CLI options
 | Task | Look at | Skip |
 |------|---------|------|
 | Change proof search behavior | `Solver/Combinators.hs`, `Solver/Types.hs` | Output, Pretty |
-| Add/modify guards | `Toolkit.hs`, example `Tools.hs` | Output, JSON, Schema |
+| Add/modify guards or queries | `Toolkit.hs`, `Tool.hs`, example `Tools.hs` | Output, JSON, Schema |
 | Change fact storage | `Facts.hs` | Output, Pretty, LLM |
 | Modify agent behavior | `Agent.hs` | Output, App |
 | Add domain example | `Examples/` directory | Core Sentinel modules |
@@ -60,10 +61,14 @@ cabal run repl -- --help  # Show CLI options
 - **DataTool**: Auto-invoked by the solver to establish facts (e.g., `RetrieveBooking`, `CheckFlightStatus`)
 - **ActionTool**: Requires explicit LLM invocation, may have side effects (e.g., `InitiateRefund`)
 - **Guard**: A `Value -> SolverM Proof` function that must succeed before an ActionTool can execute
+- **Query**: A first-class solver evaluation (same signature as Guard) that reports proofs/blocks directly to the LLM, not gating tool execution. Defined in `Tool.hs`, dispatched in `Toolkit.hs` via `executeQuery`.
 - **Context Variable**: A named slot tracking conversational focus (e.g., `booking_of_interest`)
 - **Askable Predicate**: A predicate establishable by asking the user (e.g., `user_claims_bereavement`)
 - **Fact Store**: Working memory of ground predicates established during the session
 - **Proof Trace**: Audit trail showing how conclusions were derived
+- **SentinelState**: All mutable session state in a single `IORef` (db, facts, context, askables, pending inputs, proofsFound, verbosity)
+- **EventSink**: Abstraction for display output (`Doc Ann -> IO ()`); console impl uses ANSI-styled `putDocLn`
+- **UserInput**: Abstraction for side-session stdin (`Text -> IO Text`); console impl prints prompt and reads `getLine`
 
 ### SolverOutcome
 
@@ -77,7 +82,9 @@ cabal run repl -- --help  # Show CLI options
 - Displays solver outcomes on the console via `Disp SolverOutcome`
 - Formats solver outcomes as text for the LLM via `formatSolverOutcomeForLLM`
 
-`ToolOutput.solverOutcome :: Maybe SolverOutcome` lets tools that run the solver internally (like `CheckEligibility`) return their outcome for framework processing.
+`ToolOutput.solverOutcome :: Maybe SolverOutcome` lets tools that run the solver internally return their outcome for framework processing.
+
+`Toolkit.runSolverInSentinel` is the shared helper that constructs `SolverEnv`, runs `runSolverFull`, persists facts, sets `proofsFound`, and registers blocked items. Both `evaluateToolGuard` and `executeQuery` use it.
 
 `SentinelResult.AskUser` carries a `Text` field with the formatted solver outcome for the LLM.
 
@@ -90,8 +97,9 @@ backend/
 │   ├── Sentinel/
 │   │   │
 │   │   │  # ══ Core Logic ══
-│   │   ├── Sentinel.hs                  # Core types & middleware
-│   │   ├── Tool.hs                      # Tool, Guard, ToolGuard types
+│   │   ├── Event.hs                     # EventSink, UserInput I/O abstractions
+│   │   ├── Sentinel.hs                  # Core types, unified state & middleware
+│   │   ├── Tool.hs                      # Tool, Guard, ToolGuard, Query types
 │   │   ├── Toolkit.hs                   # Toolkit builder & guard evaluation
 │   │   ├── Facts.hs                     # Fact store
 │   │   ├── Context.hs                   # Context variable management
@@ -174,16 +182,20 @@ failWith :: Text -> SolverM a                           -- Fail with diagnostic
 - **`??:`** (infixr 0): Lift `Maybe` into `MonadError`. `lookupUser userId ??: UserNotFound userId`
 - **`??%`** (infixr 0): Lift `Either` into `MonadError`. `parseInput raw ??% \e -> InvalidInput e`
 
+## Queries vs Guards
+
+Both examples use first-class **Queries** for informational solver evaluations:
+- **Passport**: `CheckEligibility` query evaluates citizenship predicate
+- **AirCanada**: `QueryRefundEligibility` query evaluates refund eligibility (same logic as the `refundGuard` on `InitiateRefund`, but gets booking from `contextVar "booking_of_interest"` instead of tool args)
+
+Queries report proofs/blocks directly to the LLM without gating tool execution. Guards gate action tools. The same solver rules can be used for both — the difference is the entry point and whether execution is blocked on failure.
+
+AirLogic still uses `withVerification` (generating `CheckGuard_*` tools) instead of queries — a candidate for migration.
+
 ## Passport Example — Iterative Proof Pattern
 
-The passport example uses a different pattern from AirCanada/AirLogic:
-- `CheckEligibility` is a **DataTool with NoGuard** (not an ActionTool with SolverGuardT)
-- It runs `runSolverFull` in its `execute` function and returns the `SolverOutcome` in `ToolOutput.solverOutcome`
-- The framework handles: block registration with Sentinel, console display via `Disp SolverOutcome`, and LLM text via `formatSolverOutcomeForLLM`
 - Uses `oneOf` (not `orElse`) in `brit` and `viaParent` to explore all branches (both parents, both birth/naturalisation)
-- No `withVerification` needed — the tool manages solver interaction directly
-
-This enables iterative deepening: each call discovers proofs at the current knowledge level and reports what questions would unlock more paths.
+- Iterative deepening: each call discovers proofs at the current knowledge level and reports what questions would unlock more paths
 
 The `applicant` is a **context variable** (not a constant). When the solver runs `contextVar "applicant"`, it either resolves to the set value (e.g., `ScStr "Romi Haydon"`) or blocks, causing the framework to create an `Ask_applicant` tool. Person identifiers use `ScExpr` compound terms (e.g., `ScExpr "mother" [ScStr "Romi Haydon"]`), which render natively as `mother(Romi Haydon)` via `scalarToText`. Helper functions `motherOf` and `fatherOf` are in `Types.hs`.
 

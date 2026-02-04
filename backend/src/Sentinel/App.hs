@@ -13,7 +13,7 @@ import Pre (Ann, Doc, Generic, indent, pretty, putDocLn, vsep, wrappedText)
 import Sentinel.Agent (AgentConfig (..), defaultConfig)
 import Sentinel.Example (Example (..), runExample)
 import Sentinel.LLM qualified as LLM
-import Sentinel.Sentinel (SessionData (..), Verbosity (..))
+import Sentinel.Sentinel (SessionData (..), Verbosity (..), consoleEventSink, consoleUserInput)
 import System.Environment (lookupEnv)
 import Prelude
 
@@ -79,7 +79,7 @@ runWithExample ex userId verbosityLevel = do
       let modelName = T.pack (show (config.llmConfig.model :: LLM.Model))
           sessionData = SessionData {userId = Just userId}
       putDocLn (readyDoc modelName ex)
-      runExample config ex sessionData verbosityLevel
+      runExample config ex sessionData verbosityLevel consoleEventSink consoleUserInput
 
 -- | Main entry point.
 main :: IO ()

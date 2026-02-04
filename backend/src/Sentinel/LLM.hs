@@ -94,30 +94,30 @@ toOpenAIMessage = \case
 --------------------------------------------------------------------------------
 
 -- | Log a tool call for debugging (compact single-line format).
-logToolCall :: ToolCall -> IO ()
-logToolCall (ToolCall.ToolCall_Function {function = fn}) =
-  putStrLn $ "[LLM Tool Call] " <> T.unpack fn.name <> " " <> T.unpack fn.arguments
+logToolCall :: (Text -> IO ()) -> ToolCall -> IO ()
+logToolCall emitDebug (ToolCall.ToolCall_Function {function = fn}) =
+  emitDebug $ "[LLM Tool Call] " <> fn.name <> " " <> fn.arguments
 
 -- | Log all tool calls from an LLM response (if verbosity >= Basic).
-logToolCalls :: Verbosity -> Chat.Message Text -> IO ()
-logToolCalls verbosity = \case
+logToolCalls :: (Text -> IO ()) -> Verbosity -> Chat.Message Text -> IO ()
+logToolCalls emitDebug verbosity = \case
   Chat.Assistant {tool_calls = Just calls}
     | verbosity >= Basic && not (Vector.null calls) ->
-        traverse_ logToolCall calls
+        traverse_ (logToolCall emitDebug) calls
   _ -> pure ()
 
 -- | Log request details at Verbose level.
-logRequest :: Verbosity -> Vector (Chat.Message (Vector Chat.Content)) -> [OpenAI.Tool] -> IO ()
-logRequest verbosity msgs tools = when (verbosity >= Verbose) do
-  putStrLn $ "[LLM Request] " <> show (Vector.length msgs) <> " messages"
-  forM_ (Vector.toList msgs) \msg -> putStrLn $ formatMessage msg
+logRequest :: (Text -> IO ()) -> Verbosity -> Vector (Chat.Message (Vector Chat.Content)) -> [OpenAI.Tool] -> IO ()
+logRequest emitDebug verbosity msgs tools = when (verbosity >= Verbose) do
+  emitDebug $ "[LLM Request] " <> T.pack (show (Vector.length msgs)) <> " messages"
+  forM_ (Vector.toList msgs) \msg -> emitDebug $ T.pack (formatMessage msg)
   unless (null tools) do
-    putStrLn $ "[LLM Tools] " <> show (length tools) <> " tools"
+    emitDebug $ "[LLM Tools] " <> T.pack (show (length tools)) <> " tools"
     forM_ tools \case
-      OpenAI.Tool_Function fn -> putStrLn $ "- " <> T.unpack fn.name
-      OpenAI.Tool_Code_Interpreter _ -> putStrLn "- (code_interpreter)"
-      OpenAI.Tool_File_Search _ -> putStrLn "- (file_search)"
-      OpenAI.Tool_Web_Search -> putStrLn "- (web_search)"
+      OpenAI.Tool_Function fn -> emitDebug $ "- " <> fn.name
+      OpenAI.Tool_Code_Interpreter _ -> emitDebug "- (code_interpreter)"
+      OpenAI.Tool_File_Search _ -> emitDebug "- (file_search)"
+      OpenAI.Tool_Web_Search -> emitDebug "- (web_search)"
 
 -- | Format a message for logging.
 formatMessage :: Chat.Message (Vector Chat.Content) -> String
@@ -142,31 +142,32 @@ extractText contents =
       _ -> []
 
 -- | Log response details at Verbose level.
-logResponse :: Verbosity -> Chat.Message Text -> IO ()
-logResponse verbosity msg = when (verbosity >= Verbose) do
+logResponse :: (Text -> IO ()) -> Verbosity -> Chat.Message Text -> IO ()
+logResponse emitDebug verbosity msg = when (verbosity >= Verbose) do
   case msg of
     Chat.Assistant {assistant_content, tool_calls} -> do
-      putStrLn $ "[LLM Response] " <> maybe "(no content)" T.unpack assistant_content
+      emitDebug $ "[LLM Response] " <> fromMaybe "(no content)" assistant_content
       case tool_calls of
         Nothing -> pure ()
         Just calls -> do
-          putStrLn $ "[LLM Response Tool Calls] " <> show (Vector.length calls)
+          emitDebug $ "[LLM Response Tool Calls] " <> T.pack (show (Vector.length calls))
           forM_ (Vector.toList calls) \(ToolCall.ToolCall_Function {id = tcId, function = fn}) ->
-            putStrLn $ "- " <> T.unpack tcId <> ": " <> T.unpack fn.name <> "(" <> T.unpack fn.arguments <> ")"
-    _ -> putStrLn $ "[LLM Response] (unexpected message type: " <> show msg <> ")"
+            emitDebug $ "- " <> tcId <> ": " <> fn.name <> "(" <> fn.arguments <> ")"
+    _ -> emitDebug $ "[LLM Response] (unexpected message type: " <> T.pack (show msg) <> ")"
 
 -- | Call the LLM chat completion API.
 -- The optional finalInstructions parameter appends a system message at the end,
 -- making it the last thing the LLM sees before generating a response.
 callChatCompletion ::
   Verbosity ->
+  (Text -> IO ()) ->
   LLMConfig ->
   Text ->
   [Message] ->
   [OpenAI.Tool] ->
   Maybe Text ->
   IO (Either Text (Chat.Message Text))
-callChatCompletion verbosity config systemPrompt msgs tools finalInstructions = do
+callChatCompletion verbosity emitDebug config systemPrompt msgs tools finalInstructions = do
   let systemMsg =
         Chat.System
           { content = Vector.singleton (Chat.Text {text = systemPrompt}),
@@ -197,19 +198,19 @@ callChatCompletion verbosity config systemPrompt msgs tools finalInstructions = 
                 then Nothing
                 else Just OpenAI.ToolChoiceAuto
           }
-  logRequest verbosity openAIMessages tools
+  logRequest emitDebug verbosity openAIMessages tools
   result <- try @SomeException (methods.createChatCompletion request)
   case result of
     Left err -> do
       when (verbosity >= Verbose)
-        $ putStrLn
+        $ emitDebug
         $ "[LLM Error] "
-        <> show err
+        <> T.pack (show err)
       pure $ Left (T.pack (show err))
     Right ChatCompletionObject {choices} ->
       case Vector.uncons choices of
         Nothing -> pure $ Left "No choices returned from API"
         Just (Choice {message}, _) -> do
-          logResponse verbosity message
-          logToolCalls verbosity message
+          logResponse emitDebug verbosity message
+          logToolCalls emitDebug verbosity message
           pure $ Right message

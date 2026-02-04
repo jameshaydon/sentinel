@@ -3,29 +3,25 @@
 -- This toolkit demonstrates a purely askable-driven proof search:
 -- no mock database, no tool bindings, all facts come from user questions.
 --
--- The CheckEligibility tool runs the solver directly, returning proofs found
--- so far and registering ALL blocked askables with Sentinel for dynamic Ask_ tools.
+-- CheckEligibility is a first-class Query: the solver evaluates the
+-- british citizenship predicate and reports proofs/blocks to the LLM.
 module Examples.Passport.Tools
   ( passportToolkit,
     passportSystemPrompt,
   )
 where
 
-import Data.IORef (readIORef, writeIORef)
-import Data.Map.Strict qualified as M
 import Data.Text qualified as T
 import Examples.Passport.Rules (brit)
 import Examples.Passport.Types (PassportDB)
 import Pre
 import Sentinel.Context (AskableSpec (..), ContextDecl (..), ContextDecls, declareContext, emptyContextDecls)
 import Sentinel.Schema qualified as Schema
-import Sentinel.Sentinel (SentinelEnv (..))
-import Sentinel.Solver (runSolverFull)
 import Sentinel.Solver.Askable (AskableDecl (..), AskableRegistry, EvidenceType (..), declareAskable, emptyAskableRegistry)
-import Sentinel.Solver.Combinators (SolverEnv (..), contextVar, emptySolverState, withRule)
+import Sentinel.Solver.Combinators (contextVar)
 import Sentinel.Solver.ToolBindings (ToolBindingRegistry, emptyToolBindingRegistry)
-import Sentinel.Solver.Types (ScalarType (..), SolverSuccess (..))
-import Sentinel.Tool (Tool (..), ToolCategory (..), ToolGuard (..), ToolOutput (..))
+import Sentinel.Solver.Types (ScalarType (..))
+import Sentinel.Tool (Query (..))
 import Sentinel.Toolkit (Toolkit (..))
 
 --------------------------------------------------------------------------------
@@ -35,7 +31,8 @@ import Sentinel.Toolkit (Toolkit (..))
 passportToolkit :: Toolkit PassportDB
 passportToolkit =
   Toolkit
-    { tools = [checkEligibilityTool],
+    { tools = [],
+      queries = [checkEligibilityQuery],
       systemPrompt = passportSystemPrompt,
       toolBindings = passportToolBindings,
       askables = passportAskables,
@@ -121,64 +118,21 @@ passportContextDecls =
     emptyContextDecls
 
 --------------------------------------------------------------------------------
--- CheckEligibility Tool
+-- CheckEligibility Query
 --------------------------------------------------------------------------------
 
-checkEligibilityTool :: Tool PassportDB
-checkEligibilityTool =
-  Tool
+checkEligibilityQuery :: Query
+checkEligibilityQuery =
+  Query
     { name = "CheckEligibility",
       description =
         "Check British citizenship eligibility. Returns any proofs found so far "
           <> "and reports how many questions are still blocking further exploration. "
           <> "Call this repeatedly after answering blocked questions to discover more proofs.",
       params = Schema.emptyObjectSchema,
-      category = DataTool,
-      guard = NoGuard,
-      execute = \_args -> do
-        sentinelEnv <- lift ask
-
-        -- Get current fact stores
-        baseFactStore <- liftIO $ readIORef sentinelEnv.facts
-        askableFactStore <- liftIO $ readIORef sentinelEnv.askableStore
-        ctxStore <- liftIO $ readIORef sentinelEnv.contextStore
-
-        -- Construct solver environment (no tool bindings, no context decls needed)
-        let solverEnv =
-              SolverEnv
-                { toolBindings = passportToolBindings,
-                  askables = passportAskables,
-                  contextDecls = passportContextDecls,
-                  contextStore = ctxStore,
-                  invokeDataTool = \_ _ -> pure (Left "No data tools in passport example")
-                }
-
-        let initState = emptySolverState baseFactStore askableFactStore
-
-        -- Run solver to find all proofs and collect all blocks
-        let solverAction = withRule "british_citizenship" do
-              person <- contextVar "applicant"
-              proof <- brit person
-              pure
-                SolverSuccess
-                  { bindings = M.empty,
-                    proof = proof,
-                    reason = "british_citizenship"
-                  }
-
-        -- Clear old pending inputs before the solver run
-        liftIO $ writeIORef sentinelEnv.pendingUserInputs []
-
-        (outcome, _finalState) <- liftIO $ runSolverFull "british_citizenship" solverEnv initState solverAction
-
-        -- Return outcome — framework handles block registration, console display, and LLM text
-        pure
-          ToolOutput
-            { observation = "",
-              producedFacts = [],
-              triggerSideSession = Nothing,
-              solverOutcome = Just outcome
-            }
+      goal = \_args -> do
+        person <- contextVar "applicant"
+        brit person
     }
 
 --------------------------------------------------------------------------------

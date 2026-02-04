@@ -10,14 +10,11 @@ module Sentinel.Toolkit
 
     -- * Toolkit Operations
     lookupTool,
+    lookupQuery,
     toLLMTools,
 
     -- * Building a Sentinel from a Toolkit
     toolkitSentinel,
-
-    -- * Verification Support
-    withVerification,
-    extractVerifiableClaims,
 
     -- * Dynamic Ask Tools
     makeDynamicAskTools,
@@ -31,7 +28,6 @@ where
 
 import Data.Aeson (Value)
 import Data.Aeson.Text qualified as Aeson.Text
-import Data.IORef (readIORef)
 import Data.List.NonEmpty qualified as NE
 import Data.Map.Strict qualified as M
 import Data.Text qualified as T
@@ -44,18 +40,19 @@ import Sentinel.Output qualified as Output
 import Sentinel.Schema qualified as Schema
 import Sentinel.Sentinel
   ( Sentinel (..),
-    SentinelEnv (..),
     SentinelM,
     SentinelResult (..),
     UserQuestion (..),
     addPendingUserInput,
+    clearAllPendingUserInputs,
+    emitEvent,
     getAskableStore,
     getContextStore,
     setProofsFound,
   )
 import Sentinel.Solver (runSolverFull)
 import Sentinel.Solver.Askable (AskableDecl (..), AskableRegistry (..), formatQuestion, lookupAskable)
-import Sentinel.Solver.Combinators (SolverEnv (..), SolverState (..), emptySolverState, withRule)
+import Sentinel.Solver.Combinators (SolverEnv (..), SolverM, SolverState (..), emptySolverState, withRule)
 import Sentinel.Solver.ToolBindings (ToolBindingRegistry)
 import Sentinel.Solver.Types
   ( BaseFact,
@@ -66,7 +63,7 @@ import Sentinel.Solver.Types
     UserInputBlock (..),
     formatSolverOutcomeForLLM,
   )
-import Sentinel.Tool (LLMTool, Tool (..), ToolCategory (..), ToolGuard (..), ToolOutput (..), toLLMTool)
+import Sentinel.Tool (LLMTool, Query (..), Tool (..), ToolCategory (..), ToolGuard (..), ToolOutput (..), queryToLLMTool, toLLMTool)
 
 --------------------------------------------------------------------------------
 -- Toolkit Type
@@ -79,6 +76,8 @@ import Sentinel.Tool (LLMTool, Tool (..), ToolCategory (..), ToolGuard (..), Too
 data Toolkit db = Toolkit
   { -- | All tools in this toolkit
     tools :: [Tool db],
+    -- | First-class queries (solver evaluations reported to LLM)
+    queries :: [Query],
     -- | System prompt for the LLM
     systemPrompt :: Text,
     -- | Tool bindings for the solver (predicate -> tool mappings)
@@ -98,9 +97,15 @@ lookupTool :: Text -> Toolkit db -> Maybe (Tool db)
 lookupTool toolName toolkit =
   find (\t -> t.name == toolName) toolkit.tools
 
--- | Convert toolkit to LLM-facing tool metadata.
+-- | Look up a query by name.
+lookupQuery :: Text -> Toolkit db -> Maybe Query
+lookupQuery queryName toolkit =
+  find (\q -> q.name == queryName) toolkit.queries
+
+-- | Convert toolkit to LLM-facing tool metadata (tools + queries).
 toLLMTools :: Toolkit db -> [LLMTool]
-toLLMTools toolkit = toLLMTool <$> toolkit.tools
+toLLMTools toolkit =
+  (toLLMTool <$> toolkit.tools) <> (queryToLLMTool <$> toolkit.queries)
 
 --------------------------------------------------------------------------------
 -- Building a Sentinel
@@ -118,67 +123,75 @@ toolkitSentinel toolkit =
     }
 
 -- | Implementation of guardedCall using a Toolkit.
+--
+-- Dispatch order: tool lookup -> query lookup -> unknown tool error.
 guardedCallImpl :: Toolkit db -> Text -> Value -> SentinelM db SentinelResult
 guardedCallImpl toolkit toolName args = do
   -- Log the tool use
-  liftIO $ putDispLn (Output.ToolUse toolName (T.Lazy.toStrict $ Aeson.Text.encodeToLazyText args))
+  emitEvent (disp (Output.ToolUse toolName (T.Lazy.toStrict $ Aeson.Text.encodeToLazyText args)))
 
-  -- Look up the tool
+  -- Look up as tool first, then as query
   case lookupTool toolName toolkit of
-    Nothing -> do
-      let err = "Unknown tool: " <> toolName
-      liftIO $ putDispLn (Output.ToolError err)
-      pure $ Denied err
-    Just tool -> do
-      -- Evaluate the guard based on its type
-      (guardResult, guardOutcome) <- evaluateToolGuard toolkit tool args
+    Just tool -> executeToolCall toolkit tool args
+    Nothing -> case lookupQuery toolName toolkit of
+      Just query -> executeQuery toolkit query args
+      Nothing -> do
+        let err = "Unknown tool: " <> toolName
+        emitEvent (disp (Output.ToolError err))
+        pure $ Denied err
 
-      case guardResult of
-        ToolGuardPassed proofs -> do
-          unless (isNoGuard tool.guard) $
-            liftIO $ putDispLn (Output.GuardPass toolName proofs)
-          -- Execute the tool
-          result <- runExceptT (tool.execute args)
-          case result of
-            Left err -> do
-              liftIO $ putDispLn (Output.ToolError err)
-              pure $ Denied err
-            Right output -> do
-              -- Add produced facts
-              addFacts output.producedFacts
-              -- Process tool's solver outcome (register blocks, console display)
-              for_ output.solverOutcome \toolOutcome -> do
-                -- Track whether proofs were found alongside blocks
-                setProofsFound (not (null toolOutcome.successes))
-                -- Register ALL blocked items from the tool's solver outcome
-                for_ toolOutcome.blocked \block ->
-                  addPendingUserInput
-                    block.inputType
-                    block.name
-                    block.arguments
-                    block.question
-                    block.candidates
-                -- Console display
-                liftIO $ putDocLn ("" <> line <> indent 2 (disp toolOutcome))
-              -- Combine observation text
-              let guardText = case guardOutcome of
-                    Just go | not (isNoGuard tool.guard) -> formatSolverOutcomeForLLM go
-                    _ -> ""
-                  toolOutcomeText = maybe "" formatSolverOutcomeForLLM output.solverOutcome
-                  toolObsText = output.observation
-                  combined = T.intercalate "\n" $ filter (not . T.null)
-                    [guardText, toolOutcomeText, toolObsText]
-              liftIO $ when (not (T.null output.observation)) $
-                putDispLn (Output.Observation output.observation)
-              pure $ Allowed combined
-        ToolGuardDenied _reason -> do
-          let deniedText = maybe "Guard failed." formatSolverOutcomeForLLM guardOutcome
-          liftIO $ putDispLn (Output.GuardDenied toolName deniedText)
-          pure $ Denied deniedText
-        ToolGuardNeedsInput question -> do
-          let blockedText = maybe "" formatSolverOutcomeForLLM guardOutcome
-          liftIO $ putDispLn (Output.NeedsUserInput toolName question.questionText)
-          pure $ AskUser question blockedText
+-- | Execute a tool call with guard evaluation.
+executeToolCall :: Toolkit db -> Tool db -> Value -> SentinelM db SentinelResult
+executeToolCall toolkit tool args = do
+  -- Evaluate the guard based on its type
+  (guardResult, guardOutcome) <- evaluateToolGuard toolkit tool args
+
+  case guardResult of
+    ToolGuardPassed proofs -> do
+      unless (isNoGuard tool.guard) $
+        emitEvent (disp (Output.GuardPass tool.name proofs))
+      -- Execute the tool
+      result <- runExceptT (tool.execute args)
+      case result of
+        Left err -> do
+          emitEvent (disp (Output.ToolError err))
+          pure $ Denied err
+        Right output -> do
+          -- Add produced facts
+          addFacts output.producedFacts
+          -- Process tool's solver outcome (register blocks, console display)
+          for_ output.solverOutcome \toolOutcome -> do
+            -- Track whether proofs were found alongside blocks
+            setProofsFound (not (null toolOutcome.successes))
+            -- Register ALL blocked items from the tool's solver outcome
+            for_ toolOutcome.blocked \block ->
+              addPendingUserInput
+                block.inputType
+                block.name
+                block.arguments
+                block.question
+                block.candidates
+            -- Console display
+            emitEvent ("" <> line <> indent 2 (disp toolOutcome))
+          -- Combine observation text
+          let guardText = case guardOutcome of
+                Just go | not (isNoGuard tool.guard) -> formatSolverOutcomeForLLM go
+                _ -> ""
+              toolOutcomeText = maybe "" formatSolverOutcomeForLLM output.solverOutcome
+              toolObsText = output.observation
+              combined = T.intercalate "\n" $ filter (not . T.null)
+                [guardText, toolOutcomeText, toolObsText]
+          when (not (T.null output.observation)) $
+            emitEvent (disp (Output.Observation output.observation))
+          pure $ Allowed combined
+    ToolGuardDenied _reason -> do
+      let deniedText = maybe "Guard failed." formatSolverOutcomeForLLM guardOutcome
+      emitEvent (disp (Output.GuardDenied tool.name deniedText))
+      pure $ Denied deniedText
+    ToolGuardNeedsInput question -> do
+      let blockedText = maybe "" formatSolverOutcomeForLLM guardOutcome
+      emitEvent (disp (Output.NeedsUserInput tool.name question.questionText))
+      pure $ AskUser question blockedText
 
 -- | Check if a tool guard is NoGuard.
 isNoGuard :: ToolGuard -> Bool
@@ -192,6 +205,58 @@ data ToolGuardResult
   | ToolGuardDenied Text
   | ToolGuardNeedsInput UserQuestion
   deriving stock (Show, Eq)
+
+-- | Run the solver within the SentinelM monad.
+--
+-- Shared helper that:
+-- - Reads stores via proper helpers
+-- - Constructs SolverEnv with toolkit's bindings/askables/contextDecls
+-- - Runs runSolverFull
+-- - Persists discovered facts back
+-- - Sets proofsFound flag
+-- - Registers all blocked items
+-- - Returns SolverOutcome
+runSolverInSentinel ::
+  Toolkit db ->
+  Text ->
+  (Value -> SolverM SolverSuccess) ->
+  Value ->
+  SentinelM db SolverOutcome
+runSolverInSentinel toolkit solverLabel solverAction args = do
+  sentinelEnv <- ask
+  -- Get current stores via accessors
+  baseFactStore <- getFactStore
+  ctxStore <- getContextStore
+  askStore <- getAskableStore
+  -- Create solver environment with bindings and actual stores
+  let solverEnv =
+        SolverEnv
+          { toolBindings = toolkit.toolBindings,
+            askables = toolkit.askables,
+            contextDecls = toolkit.contextDecls,
+            contextStore = ctxStore,
+            invokeDataTool = \tName tArgs ->
+              runReaderT (makeRunDataToolForSolver toolkit tName tArgs) sentinelEnv
+          }
+  let initState = emptySolverState baseFactStore askStore
+
+  (outcome, finalState) <- liftIO $ runSolverFull solverLabel solverEnv initState (solverAction args)
+  -- Persist any facts discovered during solver run back to SentinelM
+  addFacts (Facts.allBaseFacts finalState.baseFactStore)
+
+  -- Track whether proofs were found alongside blocks
+  setProofsFound (not (null outcome.successes))
+
+  -- Register ALL blocked items from the outcome
+  for_ outcome.blocked \block ->
+    addPendingUserInput
+      block.inputType
+      block.name
+      block.arguments
+      block.question
+      block.candidates
+
+  pure outcome
 
 -- | Evaluate a tool's guard based on its type.
 --
@@ -212,27 +277,8 @@ evaluateToolGuard toolkit tool args = do
               }
        in pure (ToolGuardPassed (noGuardSuccess :| []), Nothing)
     SolverGuardT guardName guardFn -> do
-      -- Use the solver-based guard evaluation via runSolverFull
-      sentinelEnv <- ask
-      -- Get current stores from SentinelEnv
-      baseFactStore <- liftIO $ readIORef sentinelEnv.facts
-      ctxStore <- getContextStore
-      askStore <- getAskableStore
-      -- Create solver environment with bindings and actual stores
-      let solverEnv =
-            SolverEnv
-              { toolBindings = toolkit.toolBindings,
-                askables = toolkit.askables,
-                contextDecls = toolkit.contextDecls,
-                contextStore = ctxStore,
-                invokeDataTool = \tName tArgs ->
-                  runReaderT (makeRunDataToolForSolver toolkit tName tArgs) sentinelEnv
-              }
-      let initState = emptySolverState baseFactStore askStore
-
-      -- Run the guard function to produce SolverSuccess
-      let solverAction = withRule guardName $ do
-            proof <- guardFn args
+      let solverAction guardArgs = withRule guardName $ do
+            proof <- guardFn guardArgs
             pure
               SolverSuccess
                 { bindings = M.empty,
@@ -240,21 +286,7 @@ evaluateToolGuard toolkit tool args = do
                   reason = guardName
                 }
 
-      (outcome, finalState) <- liftIO $ runSolverFull guardName solverEnv initState solverAction
-      -- Persist any facts discovered during solver run back to SentinelM
-      addFacts (Facts.allBaseFacts finalState.baseFactStore)
-
-      -- Track whether proofs were found alongside blocks
-      setProofsFound (not (null outcome.successes))
-
-      -- Register ALL blocked items from the outcome
-      for_ outcome.blocked \block ->
-        addPendingUserInput
-          block.inputType
-          block.name
-          block.arguments
-          block.question
-          block.candidates
+      outcome <- runSolverInSentinel toolkit guardName solverAction args
 
       case NE.nonEmpty outcome.successes of
         Just successes ->
@@ -277,6 +309,30 @@ evaluateToolGuard toolkit tool args = do
             [] ->
               pure (ToolGuardDenied (formatSolverOutcomeForLLM outcome), Just outcome)
 
+-- | Execute a query: run the solver and report results to the LLM.
+--
+-- Queries give a fresh complete picture, so pending user inputs are cleared first.
+executeQuery :: Toolkit db -> Query -> Value -> SentinelM db SentinelResult
+executeQuery toolkit query args = do
+  -- Clear old pending inputs — query gives a fresh complete picture
+  clearAllPendingUserInputs
+
+  let solverAction queryArgs = withRule query.name $ do
+        proof <- query.goal queryArgs
+        pure
+          SolverSuccess
+            { bindings = M.empty,
+              proof = proof,
+              reason = query.name
+            }
+
+  outcome <- runSolverInSentinel toolkit query.name solverAction args
+
+  -- Console display
+  emitEvent ("" <> line <> indent 2 (disp outcome))
+
+  pure $ Allowed (formatSolverOutcomeForLLM outcome)
+
 -- | Create a data tool callback for the solver.
 --
 -- Returns the produced facts directly so the solver can add them to its store.
@@ -294,119 +350,26 @@ makeRunDataToolForSolver toolkit toolName args =
           pure $ Left $ "Tool " <> toolName <> " is not a data tool"
       | otherwise -> do
           -- Log the tool invocation (solver-initiated, not LLM-initiated)
-          liftIO $ putDispLn (Output.QueryExecution toolName (T.Lazy.toStrict $ Aeson.Text.encodeToLazyText args))
+          emitEvent (disp (Output.QueryExecution toolName (T.Lazy.toStrict $ Aeson.Text.encodeToLazyText args)))
           result <- runExceptT (tool.execute args)
           case result of
             Left err -> do
-              liftIO $ putDispLn (Output.ToolError err)
+              emitEvent (disp (Output.ToolError err))
               pure $ Left err
             Right output -> do
               -- Log the observation for debugging
-              liftIO $ putDispLn (Output.Observation output.observation)
+              emitEvent (disp (Output.Observation output.observation))
               -- Return the produced facts for the solver to use
               pure $ Right output.producedFacts
 
 -- | Summarize current facts for the LLM context.
 summarizeFactsImpl :: SentinelM db Text
 summarizeFactsImpl = do
-  factsRef <- asks (.facts)
-  factsDb <- liftIO $ readIORef factsRef
+  factsDb <- getFactStore
   let allFacts = Facts.allBaseFacts factsDb
   if null allFacts
     then pure "No facts established yet."
     else pure $ T.unlines $ "Known facts:" : fmap (("  - " <>) . renderDocPlain . disp) allFacts
-
---------------------------------------------------------------------------------
--- Verification Support
---------------------------------------------------------------------------------
-
--- | Instructions for the LLM to verify claims before stating them.
-verificationInstructions :: Text
-verificationInstructions =
-  T.unlines
-    [ "",
-      "VERIFICATION REQUIREMENT:",
-      "Before making claims about eligibility to the user, use the CheckGuard tools to verify them first.",
-      "Never state eligibility without verification."
-    ]
-
--- | Extract verifiable claims from action tools with SolverGuardT guards.
---
--- Returns a list of (guardName, tool) pairs for tools that have solver guards.
-extractVerifiableClaims :: Toolkit db -> [(Text, Tool db)]
-extractVerifiableClaims tk =
-  [ (guardName, tool)
-  | tool <- tk.tools,
-    tool.category == ActionTool,
-    SolverGuardT guardName _ <- [tool.guard]
-  ]
-
--- | Generate a CheckGuard tool for each guarded action tool.
-makeCheckGuardTools :: Toolkit db -> [Tool db]
-makeCheckGuardTools tk =
-  [ makeCheckGuardTool tk guardName tool
-  | (guardName, tool) <- extractVerifiableClaims tk
-  ]
-
--- | Create a single CheckGuard tool for a specific action tool.
-makeCheckGuardTool :: Toolkit db -> Text -> Tool db -> Tool db
-makeCheckGuardTool tk guardName actionTool =
-  Tool
-    { name = "CheckGuard_" <> actionTool.name,
-      description =
-        "Check eligibility for "
-          <> actionTool.name
-          <> " before attempting to execute it. "
-          <> "Returns whether eligible, not eligible, or needs more information. "
-          <> "Tool context: "
-          <> actionTool.description,
-      params = actionTool.params, -- Reuse exact schema
-      category = DataTool,
-      guard = NoGuard,
-      execute = checkGuardExecute tk guardName
-    }
-
--- | Execute a CheckGuard tool.
-checkGuardExecute ::
-  Toolkit db ->
-  Text ->
-  Value ->
-  ExceptT Text (SentinelM db) ToolOutput
-checkGuardExecute tk guardName args = do
-  -- Find the tool with this guard
-  tool <- lookup guardName (extractVerifiableClaims tk) ??: ("Unknown guard: " <> guardName)
-
-  -- Run the guard (reusing guard evaluation logic)
-  (_result, mOutcome) <- lift $ evaluateToolGuard tk tool args
-
-  -- Display the solver outcome on console
-  for_ mOutcome \outcome ->
-    liftIO $ putDocLn ("" <> line <> indent 2 (disp outcome))
-
-  pure
-    ToolOutput
-      { observation = "", -- Framework handles formatting via solverOutcome
-        producedFacts = [], -- CheckGuard is informational only
-        triggerSideSession = Nothing,
-        solverOutcome = mOutcome
-      }
-
-
--- | Add verification support to a toolkit.
---
--- This adds CheckGuard tools (one per guarded action) and verification
--- instructions to the system prompt.
---
--- Note: Ask tools for context variables and askables are now generated
--- dynamically by the agent when blocked, not added upfront.
-withVerification :: Toolkit db -> Toolkit db
-withVerification tk =
-  tk
-    { tools =
-        makeCheckGuardTools tk
-          <> tk.tools,
-      systemPrompt = tk.systemPrompt <> verificationInstructions
-    }
 
 --------------------------------------------------------------------------------
 -- Dynamic Ask Tools

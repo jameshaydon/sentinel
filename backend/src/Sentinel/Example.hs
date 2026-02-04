@@ -8,7 +8,6 @@ module Sentinel.Example
   )
 where
 
-import Data.IORef (readIORef)
 import Data.Map.Strict qualified as M
 import Data.Text qualified as T
 import Pre
@@ -16,7 +15,7 @@ import Sentinel.Agent (AgentConfig (..), Message, runAgent)
 import Sentinel.Context (ContextEstablishment (..), ContextStore (..), EstablishmentMethod (..))
 import Sentinel.Facts qualified as Facts
 import Sentinel.Output qualified as Output
-import Sentinel.Sentinel (Sentinel, SentinelEnv (..), SessionData, Verbosity (..), newSentinelEnv, runSentinelM, setVerbosity)
+import Sentinel.Sentinel (EventSink (..), Sentinel, SentinelEnv (..), SessionData, UserInput, Verbosity (..), getContextStore, newSentinelEnv, runSentinelM, setVerbosity)
 import Sentinel.Solver.Types (scalarToText)
 import Sentinel.Toolkit (Toolkit (..), toolkitSentinel)
 import Sentinel.Verbosity (parseVerbosity)
@@ -33,18 +32,18 @@ data Example db = Example
   }
 
 -- | Run an example with the given agent configuration and session data.
-runExample :: AgentConfig -> Example db -> SessionData -> Verbosity -> IO ()
-runExample config ex sessionData verbosityLevel = do
+runExample :: AgentConfig -> Example db -> SessionData -> Verbosity -> EventSink -> UserInput -> IO ()
+runExample config ex sessionData verbosityLevel sink input = do
   let sysPrompt = "Be terse and concise in your responses. This is a demo/prototype.\n\n" <> ex.toolkit.systemPrompt
       sentinel = toolkitSentinel ex.toolkit
       facts = Facts.emptyBaseFactStore
 
-  sentinelEnv <- newSentinelEnv ex.initialDB facts sessionData ex.toolkit.contextDecls verbosityLevel
+  sentinelEnv <- newSentinelEnv ex.initialDB facts sessionData ex.toolkit.contextDecls verbosityLevel sink input
 
   -- Display seeded context
-  ctxStore <- readIORef sentinelEnv.contextStore
+  ctxStore <- runSentinelM sentinelEnv getContextStore
   let seededCtx = getSeededContext ctxStore
-  putDispLn (Output.SessionInfo seededCtx)
+  sentinelEnv.eventSink.emit (disp (Output.SessionInfo seededCtx))
 
   repl config ex.toolkit sysPrompt sentinel sentinelEnv ex.goodbyeMessage [] 0
 

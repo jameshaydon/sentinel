@@ -35,6 +35,22 @@ User ←→ LLM Agent ←→ Sentinel ←→ Tools (MCP)
 - When the agent wants to offer refund advice or issue a refund, it first checks with Sentinel. The solver recursively calls other MCP tools to gather the data needed to make a decision. If the action is permitted, a proof is produced (and explained to the user if relevant). Otherwise a set of _blockers_ is returned, guiding the LLM towards a solution.
 - Facts come from tool calls or explicit user confirmation ("askable" predicates). The LLM formulates symbolic queries, it never injects literal values into the reasoning chain.
 
+## Policy Language
+
+Policies are currently specified using an embedded DSL (eDSL) in Haskell. This
+gives full access to Haskell's type system and tooling, but ties policy authoring
+to the host language.
+
+We plan to develop a standalone policy language, so that policies can be written
+and audited independently of the Haskell codebase.
+
+We also plan to support calling out to third-party solvers — such as
+[z3](https://github.com/Z3Prover/z3),
+[Clingo](https://potassco.org/clingo/), and
+[s(CASP)](https://utdallas.edu/~gupta/scasp/) — enabling richer reasoning
+(e.g. arithmetic constraints, answer-set programming, abductive reasoning) where
+the built-in proof search is not sufficient.
+
 ## Examples
 
 So far we have developed two examples:

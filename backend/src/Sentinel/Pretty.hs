@@ -15,7 +15,6 @@ module Sentinel.Pretty
     renderDoc,
     renderDocPlain,
     putDocLn,
-    putDispLn,
 
     -- * Style helpers
     styled,
@@ -109,10 +108,6 @@ renderDocPlain = TextRender.renderStrict . layoutPretty layoutOpts
 -- | Print a Doc to stdout, followed by a newline.
 putDocLn :: Doc Ann -> IO ()
 putDocLn doc = putStrLn (Text.unpack (renderDoc doc))
-
--- | Print a displayable value to stdout, followed by a newline.
-putDispLn :: (Disp a) => a -> IO ()
-putDispLn = putDocLn . disp
 
 -- | A class for things that have a canonical pretty-printed representation.
 class Disp a where

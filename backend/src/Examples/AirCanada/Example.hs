@@ -8,8 +8,6 @@ import Examples.AirCanada.MockDB (initialDB)
 import Examples.AirCanada.Tools (airCanadaToolkit)
 import Examples.AirCanada.Types (AirlineDB)
 import Sentinel.Example (Example (..))
-import Sentinel.Toolkit (withVerification)
-
 -- | The Air Canada example.
 airCanadaExample :: Example AirlineDB
 airCanadaExample =
@@ -23,6 +21,6 @@ airCanadaExample =
           "Find my bookings, my name is Alice Smith"
         ],
       goodbyeMessage = "Thank you for using Air Canada. Goodbye!",
-      toolkit = withVerification airCanadaToolkit,
+      toolkit = airCanadaToolkit,
       initialDB = initialDB
     }
